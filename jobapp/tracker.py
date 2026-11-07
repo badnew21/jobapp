@@ -10,7 +10,7 @@ from pathlib import Path
 from .search import Job
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "jobs.db"
-STATUSES = ["new", "queued", "applied", "skipped", "interview", "offer", "rejected"]
+STATUSES = ["new", "queued", "needs_review", "applied", "skipped", "interview", "offer", "rejected"]
 
 
 class Tracker:
@@ -71,6 +71,13 @@ class Tracker:
             d.update(status=r["status"], found_at=r["found_at"], updated_at=r["updated_at"], notes=r["notes"])
             out.append(d)
         return out
+
+    def applied_today(self) -> int:
+        today = datetime.now().date().isoformat()
+        row = self.conn.execute(
+            "SELECT COUNT(*) c FROM jobs WHERE status='applied' AND updated_at >= ?", (today,)
+        ).fetchone()
+        return row["c"]
 
     def counts(self) -> dict[str, int]:
         res = {s: 0 for s in STATUSES}

@@ -14,8 +14,9 @@ from dotenv import load_dotenv
 
 from jobapp.industries import INDUSTRIES, JOB_TYPES
 from jobapp.keywords import analyze
-from jobapp.profile import DATA_DIR, FIELDS, load_profile, save_profile
-from jobapp.resume import build_summary, build_tailored_docx, docx_to_text, existing_summary, read_resume
+from jobapp.profile import ANSWERS, DATA_DIR, FIELDS, load_profile, save_profile
+from jobapp.resume import (docx_to_text, existing_skills, pdf_to_text, read_resume, resume_filename,
+                           tailor_for_job)
 from jobapp.search import SearchOptions, search_jobs
 from jobapp.tracker import STATUSES, Tracker
 
@@ -34,8 +35,8 @@ profile = load_profile()
 st.title("💼 Job Helper")
 counts = tracker.counts()
 cols = st.columns(5)
-for col, key in zip(cols, ["new", "queued", "applied", "interview", "skipped"]):
-    col.metric(key.title(), counts.get(key, 0))
+for col, key in zip(cols, ["new", "queued", "needs_review", "applied", "interview"]):
+    col.metric(key.replace('_', ' ').title(), counts.get(key, 0))
 
 tab_profile, tab_search, tab_resume, tab_apply, tab_track = st.tabs(
     ["1. Me & my resume", "2. Find jobs", "3. Tailor resume", "4. Apply", "5. Tracker"]
@@ -55,18 +56,53 @@ with tab_profile:
             st.success("Saved.")
             profile = load_profile()
 
+    st.subheader("Screening question answers")
+    st.caption("The auto-submitter uses these to answer the usual questions. Answer them truthfully: "
+               "employers check, and a wrong \"yes\" gets offers pulled. If a form asks something not "
+               "on this list, the job goes to *Needs review* for you to finish.")
+    with st.form("answers"):
+        answers = dict(profile.get("answers", {}))
+        c1, c2 = st.columns(2)
+        for i, (key, (label, options)) in enumerate(ANSWERS.items()):
+            col = c1 if i % 2 == 0 else c2
+            if options:
+                cur = answers.get(key, "")
+                choices = ["(not set)"] + options
+                val = col.selectbox(label, choices, index=choices.index(cur) if cur in choices else 0, key=f"a_{key}")
+                answers[key] = "" if val == "(not set)" else val
+            else:
+                answers[key] = col.text_input(label, value=answers.get(key, ""), key=f"a_{key}")
+        eeo = st.checkbox("Answer demographic questions (gender, race, veteran, disability) with "
+                          "\"decline to self-identify\"", value=profile.get("eeo_decline", True))
+        agree = st.checkbox("Tick \"I agree / I acknowledge the privacy policy\" boxes for me",
+                            value=profile.get("auto_agree_terms", False))
+        if st.form_submit_button("Save answers"):
+            profile.update(answers=answers, eeo_decline=eeo, auto_agree_terms=agree)
+            save_profile(profile)
+            st.success("Saved.")
+
     st.subheader("Your resume")
-    upload = st.file_uploader("Upload your resume (Word .docx works best, PDF or .txt also OK)",
-                              type=["docx", "pdf", "txt"])
-    if upload is not None:
+    upload = st.file_uploader("Upload your resume (PDF or Word .docx)", type=["pdf", "docx", "txt"])
+    if upload is not None and st.session_state.get("uploaded") != upload.file_id:
         DATA_DIR.mkdir(exist_ok=True)
         dest = DATA_DIR / f"resume_original{Path(upload.name).suffix.lower()}"
         dest.write_bytes(upload.getvalue())
         profile["resume_path"] = str(dest)
+        text = read_resume(dest.name, upload.getvalue())
+        if not profile.get("skill_bank"):
+            profile["skill_bank"] = [s.lower() for s in existing_skills(text)]
         save_profile(profile)
+        st.session_state["uploaded"] = upload.file_id
         st.success(f"Resume saved ({upload.name}).")
-    if profile.get("resume_path"):
+    if profile.get("resume_path") and Path(profile["resume_path"]).exists():
         st.write(f"Current resume: `{Path(profile['resume_path']).name}`")
+        text = read_resume(profile["resume_path"], Path(profile["resume_path"]).read_bytes())
+        if len(text.strip()) < 200:
+            st.error("Almost no text could be read from this file. It's probably a scanned or image PDF, "
+                     "which resume filters can't read either. Upload the Word version, or re-save the PDF "
+                     "from Word or Google Docs.")
+        with st.expander("What the filters will read from your resume"):
+            st.text(text)
 
 
 def resume_text() -> str:
@@ -131,7 +167,7 @@ with tab_search:
         if c2.button("➕ Queue selected"):
             n = 0
             for r in edited:
-                if r["queue"] and r["status"] in ("new", "skipped"):
+                if r["queue"] and r["status"] in ("new", "skipped", "needs_review"):
                     tracker.set_status(r["id"], "queued")
                     n += 1
             st.success(f"Queued {n} jobs. Go to the Apply tab.")
@@ -139,93 +175,139 @@ with tab_search:
 
 # ------------------------------------------------------------------ resume tailoring
 with tab_resume:
-    st.subheader("Make your resume match what employers' filters look for")
+    st.subheader("Your skills bank")
     rt = resume_text()
     if not rt:
         st.info("Upload your resume in tab 1 first.")
     else:
+        st.write("A separate resume is made automatically for **every job** you apply to. Each one puts the "
+                 "skills that posting asks for at the top of the Skills section and in the summary, and "
+                 "names the job title. It only uses skills from this bank, so keep it to things that are "
+                 "true for you.")
         pool = st.session_state.get("results") or [r for r in tracker.rows() if r["status"] in ("new", "queued")]
-        industry = st.selectbox("Industry to tailor for", list(INDUSTRIES),
+        industry = st.selectbox("Industry", list(INDUSTRIES),
                                 index=list(INDUSTRIES).index(st.session_state.get("industry", "Any")),
                                 key="tailor_industry")
-        target_title = st.text_input("Job title you're aiming for", placeholder="e.g. Cashier, Crew Member")
-        if not pool:
-            st.info("No job postings to compare against yet. Using the industry's common keywords. "
-                    "Run a search for better results.")
         report = analyze(rt, [j["description"] for j in pool], industry)
+        bank = [k.lower() for k in profile.get("skill_bank", [])]
+        hits = dict(report.keywords)
+        options = list(dict.fromkeys(bank + report.present + report.missing))
 
-        c1, c2 = st.columns([1, 2])
-        c1.metric("Keyword match now", f"{report.score}%")
-        c1.caption(f"Compared against {len(pool)} postings.")
-        with c2:
-            st.write("**Already on your resume:**")
-            st.write(", ".join(report.present) or "—")
+        def fmt(k: str) -> str:
+            return f"{k}  ({hits[k]} postings)" if hits.get(k) else k
 
-        st.write("**Keywords employers use that your resume is missing.** "
-                 "Tick only the ones that are **true for you**. You'll be asked about them in interviews.")
-        approved: list[str] = []
-        grid = st.columns(3)
-        for i, kw in enumerate(report.missing):
-            count = dict(report.keywords).get(kw, 0)
-            if grid[i % 3].checkbox(f"{kw}  ({count} postings)", key=f"kw_{kw}"):
-                approved.append(kw)
-        custom = st.text_input("Other skills to add (comma separated)", placeholder="e.g. forklift certified, CPR")
-        approved += [c.strip().lower() for c in custom.split(",") if c.strip()]
+        st.caption("Skills employers ask for are listed with how many of your search results mention them.")
+        chosen = st.multiselect("Skills you have", options, default=bank or report.present, format_func=fmt)
+        custom = st.text_input("Add other skills (comma separated)", placeholder="e.g. forklift certified, CPR")
+        chosen += [c.strip().lower() for c in custom.split(",") if c.strip()]
+        missing_now = [k for k in report.missing if k not in chosen][:12]
+        if missing_now:
+            st.write("**Often asked for, not in your bank yet:** " + ", ".join(missing_now))
 
-        all_kw = approved + report.present
-        summary = st.text_area(
-            "Professional summary (edit freely)",
-            value=build_summary(target_title, all_kw, existing_summary(rt)),
-            height=110,
-        )
-
-        if st.button("📝 Build tailored resume", type="primary"):
-            data = build_tailored_docx(rt, profile, target_title, approved + report.present, summary)
-            out = DATA_DIR / "resume_tailored.docx"
-            out.write_bytes(data)
-            profile["tailored_resume_path"] = str(out)
+        fmt_choice = st.radio("Resume file type to send", ["pdf", "docx"], horizontal=True,
+                              index=0 if profile.get("resume_format", "pdf") == "pdf" else 1)
+        if st.button("💾 Save skills", type="primary"):
+            profile.update(skill_bank=list(dict.fromkeys(chosen)), resume_format=fmt_choice)
             save_profile(profile)
-            new_score = analyze(docx_to_text(data), [j["description"] for j in pool], industry).score
-            st.success(f"Done. Keyword match went from {report.score}% to {new_score}%. "
-                       "The Apply assistant will attach this version.")
-            st.download_button("⬇️ Download tailored resume", data, file_name="resume_tailored.docx",
-                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            st.success(f"Saved {len(profile['skill_bank'])} skills.")
+
+        st.divider()
+        st.subheader("Preview the resume for one job")
+        if not pool:
+            st.info("Search for jobs first.")
+        else:
+            idx = st.selectbox("Job", range(len(pool)),
+                               format_func=lambda i: f"{pool[i]['title']} — {pool[i]['company']}")
+            job = pool[idx]
+            data, matched = tailor_for_job(rt, profile, job, chosen, fmt_choice)
+            text = pdf_to_text(data) if fmt_choice == "pdf" else docx_to_text(data)
+            before = analyze(rt, [job["description"]], industry).score
+            after = analyze(text, [job["description"]], industry).score
+            c1, c2 = st.columns(2)
+            c1.metric("Keyword match for this job", f"{after}%", f"{after - before:+d} vs. original")
+            c2.write("**Skills this posting asks for that you have:** " + (", ".join(matched) or "none"))
+            st.download_button("⬇️ Download this version", data,
+                               file_name=resume_filename(job, profile.get("full_name", ""), fmt_choice))
 
         with st.expander("Formatting tips that help ATS filters"):
             st.markdown(
-                "- Save as **.docx** (or a text-based PDF). Scanned or image PDFs can't be read.\n"
-                "- Use standard headings: *Summary, Skills, Experience, Education*.\n"
+                "- Text-based PDF or .docx. Scanned or image PDFs can't be read.\n"
+                "- Standard headings: *Summary, Skills, Experience, Education*.\n"
                 "- No tables, columns, text boxes, icons or photos. Parsers scramble them.\n"
-                "- Put contact info in the body, not the header/footer.\n"
-                "- Use the employer's exact words (\"cash handling\", not \"handled money\").\n"
-                "- Don't hide keywords in white text. Recruiters see it and toss the resume."
+                "- Use the employer's exact words (\"cash handling\", not \"handled money\")."
             )
 
 # ------------------------------------------------------------------ apply
+LOG = DATA_DIR / "apply_log.txt"
+
+
+def launch(args: list[str]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    log = open(LOG, "w")  # noqa: SIM115 - handed to the child process
+    subprocess.Popen([sys.executable, "-u", "-m", "jobapp.apply_assist", *args],
+                     cwd=str(Path(__file__).parent), stdout=log, stderr=subprocess.STDOUT)
+
+
 with tab_apply:
-    st.subheader("Work through your queue")
     queued = tracker.rows("queued")
-    st.write(f"**{len(queued)} jobs queued.**")
+    review = tracker.rows("needs_review")
+    st.subheader(f"{len(queued)} jobs queued")
     if queued:
         st.dataframe([{"title": j["title"], "company": j["company"], "location": j["location"]}
                       for j in queued], hide_index=True, use_container_width=True)
-    resume_to_send = profile.get("tailored_resume_path") or profile.get("resume_path")
-    st.write(f"Resume that will be attached: `{Path(resume_to_send).name if resume_to_send else 'none'}`")
-    st.markdown(
-        "Pressing **Start** opens a browser window. For each job it opens the posting, clicks *Apply*, "
-        "fills in your name, email, phone and address, and attaches your resume.\n\n"
-        "Then **you** answer the screening questions and press the site's Submit button. "
-        "Use the bar at the bottom of the window:\n"
-        "- **Fill this form**: fill the page again (use it after the site moves to a new page)\n"
-        "- **I applied ✓**: marks it applied and goes to the next job\n"
-        "- **Skip** / **Stop**\n\n"
-        "The first time, you may need to sign in to sites like Indeed or Workday. The browser remembers you."
-    )
-    limit = st.number_input("How many jobs this session", 1, 200, min(len(queued), 20) or 1)
-    if st.button("▶️ Start applying", type="primary", disabled=not queued):
-        subprocess.Popen([sys.executable, "-m", "jobapp.apply_assist", "--limit", str(int(limit))],
-                         cwd=str(Path(__file__).parent))
-        st.success("Browser opening... Come back here and refresh when you're done.")
+
+    mode = st.radio("How should it apply?",
+                    ["Automatically (it presses Submit)", "Review each one (you press Submit)"])
+    ans = profile.get("answers", {})
+    not_ready = [label for key, (label, opts) in ANSWERS.items()
+                 if key in ("authorized", "over18", "sponsorship") and not ans.get(key)]
+    if not profile.get("email") or not profile.get("phone"):
+        not_ready.append("your email and phone")
+    if not profile.get("resume_path"):
+        not_ready.append("your resume")
+
+    if mode.startswith("Auto"):
+        c1, c2, c3 = st.columns(3)
+        dry = c1.checkbox("Test run (fill forms, don't submit)", value=not tracker.counts().get("applied"))
+        headless = c2.checkbox("Hide the browser window")
+        cap = c3.number_input("Daily limit", 1, 200, 40,
+                              help="Most job sites flag accounts that send hundreds a day.")
+        limit = st.number_input("Jobs this run", 1, 500, max(1, min(len(queued), 40)))
+        st.caption(
+            "For each job it opens the posting, fills everything in, attaches a resume made for that job, "
+            "and submits. Jobs it can't finish honestly (CAPTCHA, login needed, a question you haven't "
+            "answered) go to **Needs review** with the reason. It waits 20-45 seconds between jobs. "
+            "Indeed and LinkedIn don't allow automated applying and can suspend accounts, so jobs that "
+            "need you signed in to them are best done in review mode.")
+        if not_ready:
+            st.warning("Fill in first (tab 1): " + ", ".join(not_ready))
+        if st.button("▶️ Start", type="primary", disabled=not queued or bool(not_ready)):
+            args = ["--mode", "auto", "--limit", str(int(limit)), "--daily-cap", str(int(cap))]
+            args += ["--dry-run"] if dry else []
+            args += ["--headless"] if headless else []
+            launch(args)
+            st.success("Started. Progress shows below; press Refresh to update it.")
+    else:
+        st.markdown(
+            "It opens each job, fills in what it can and attaches that job's resume. You answer anything "
+            "left and press the site's Submit, then use the bar at the bottom of the window: "
+            "**Fill this form** (after the site changes page), **I applied ✓**, **Skip**, **Stop**.")
+        if st.button("▶️ Start", type="primary", disabled=not queued):
+            launch(["--mode", "review"])
+            st.success("Browser opening...")
+
+    if LOG.exists():
+        st.subheader("Progress")
+        st.button("🔄 Refresh")
+        st.code("\n".join(LOG.read_text().splitlines()[-40:]) or "starting...")
+
+    st.subheader(f"Needs review ({len(review)})")
+    if review:
+        st.dataframe([{"title": j["title"], "company": j["company"], "why": j["notes"]} for j in review],
+                     hide_index=True, use_container_width=True)
+        if st.button("Open these so I can finish them"):
+            launch(["--mode", "review", "--status", "needs_review"])
+            st.success("Browser opening...")
 
 # ------------------------------------------------------------------ tracker
 with tab_track:
@@ -237,6 +319,8 @@ with tab_track:
     for r in rows[:300]:
         with st.expander(f"{r['title']} — {r['company']}  ·  {r['status']}"):
             st.write(f"{r['location']} · {r['job_type'].replace('_', ' ')} · {r['salary']} · posted {r['posted']}")
+            if r["notes"]:
+                st.info(r["notes"])
             st.write(r["description"][:1500])
             st.link_button("Open posting", r["url"])
             c1, c2 = st.columns([1, 3])

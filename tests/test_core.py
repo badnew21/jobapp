@@ -99,3 +99,28 @@ def test_tracker(tmp_path):
     t.set_status("a", "queued")
     assert t.status_of("a") == "queued"
     assert t.counts()["queued"] == 1
+
+
+def test_pdf_round_trip_and_per_job_tailoring():
+    from jobapp.resume import build_structure, pdf_to_text, read_resume, render_pdf, tailor_for_job
+
+    pdf = render_pdf(build_structure(RESUME, {}, "Cashier", []))
+    text = read_resume("resume.pdf", pdf)
+    assert existing_skills(text) == ["Customer service", "Cash handling", "Teamwork"]
+
+    job = {"title": "Crew Member - Part Time - Chicago", "company": "Burger Co", "description": POSTINGS[0]}
+    bank = ["customer service", "food safety", "forklift"]
+    data, matched = tailor_for_job(text, {"full_name": "Jane Doe"}, job, bank, "pdf")
+    out = pdf_to_text(data)
+    assert matched == ["customer service", "food safety"]
+    assert "Forklift" in out                       # in her bank, listed after the matched ones
+    assert out.index("Food Safety") < out.index("Forklift")
+    assert "forklift" not in out.split("SKILLS")[0].lower()  # summary only mentions matched skills
+    assert "QuickMart" in out
+
+
+def test_clean_title_and_filename():
+    from jobapp.resume import clean_title, resume_filename
+
+    assert clean_title("Crew Member - Part Time - Chicago, IL") == "Crew Member"
+    assert resume_filename({"company": "Kroger/Ralphs Inc."}, "Jane Doe", "pdf") == "Jane Doe Resume - KrogerRalphs Inc.pdf"
