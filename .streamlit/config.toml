@@ -1,0 +1,7 @@
+# Runs only on this computer. "minimal" hides Streamlit's Deploy button,
+# which would try to put the app (and her personal details) online.
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
