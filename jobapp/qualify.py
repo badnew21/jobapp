@@ -157,7 +157,9 @@ def check_fit(job: dict, quals: dict, resume_text: str = "") -> Fit:
             # "CPR certification within 30 days of hire" or "we'll get you certified" isn't a requirement up front.
             if re.search(r"within \d+ (days|months)|after hire|upon hire|we will (train|certify|pay)|obtain", low):
                 continue
-            if name in EASY_CREDENTIALS:
+            if name == "Driver's license":
+                soft.append("Asks for a driver's license (tick it in Qualifications if she has one)")
+            elif name in EASY_CREDENTIALS:
                 soft.append(f"Asks for {name} (a short class)")
             else:
                 (soft if is_soft else hard).append(f"{'Prefers' if is_soft else 'Requires'} {name}")

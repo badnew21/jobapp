@@ -55,8 +55,10 @@ class SearchOptions:
     job_types: list[str] = field(default_factory=list)   # values from industries.JOB_TYPES
     industry: str = "Any"
     extra_keywords: str = ""
-    max_days_old: int = 14
-    max_results: int = 100
+    max_days_old: int = 30
+    max_results: int = 500
+    industries: list[str] = field(default_factory=list)   # several industries at once; overrides `industry`
+    per_query: int = 50
     country: str = "us"
     sources: list[str] = field(default_factory=lambda: ["Indeed"])
 
@@ -74,6 +76,20 @@ def _format_salary(lo, hi) -> str:
     if lo and hi and round(lo) != round(hi):
         return f"${lo:,.0f} - ${hi:,.0f}"
     return f"${(lo or hi):,.0f}"
+
+
+def chosen_industries(opts: SearchOptions) -> list[str]:
+    return [i for i in (opts.industries or [opts.industry]) if i in INDUSTRIES] or ["Any"]
+
+
+def search_queries(opts: SearchOptions) -> list[str]:
+    """Every phrase to search for. Extra keywords are searched on their own, not
+    tacked onto each industry phrase (which would make every search narrower)."""
+    queries: list[str] = []
+    for ind in chosen_industries(opts):
+        queries += [q for q in INDUSTRIES[ind]["queries"] if q]
+    queries += [t.strip() for t in re.split(r"[,;]", opts.extra_keywords) if t.strip()]
+    return list(dict.fromkeys(queries)) or ["jobs"]
 
 
 # ---------------------------------------------------------------- Adzuna
@@ -134,7 +150,7 @@ def search_adzuna(opts: SearchOptions, session: requests.Session | None = None) 
             "and put ADZUNA_APP_ID / ADZUNA_APP_KEY in your .env file."
         )
     s = session or requests.Session()
-    preset = INDUSTRIES.get(opts.industry, INDUSTRIES["Any"])
+    preset = INDUSTRIES[chosen_industries(opts)[0]]
     jobs: dict[str, Job] = {}
     for query in preset["queries"]:
         for category in ([preset["adzuna_category"], None] if preset["adzuna_category"] else [None]):
@@ -180,7 +196,7 @@ def parse_remotive(item: dict) -> Job:
 
 def search_remotive(opts: SearchOptions, session: requests.Session | None = None) -> list[Job]:
     s = session or requests.Session()
-    preset = INDUSTRIES.get(opts.industry, INDUSTRIES["Any"])
+    preset = INDUSTRIES[chosen_industries(opts)[0]]
     params: dict = {"limit": opts.max_results}
     if preset["remotive_category"]:
         params["category"] = preset["remotive_category"]
@@ -255,16 +271,12 @@ def search_jobspy(opts: SearchOptions, sites: list[str], scrape=None) -> list[Jo
             from jobspy import scrape_jobs as scrape
         except ImportError as e:
             raise RuntimeError("JobSpy isn't installed. Run: python -m pip install -r requirements.txt") from e
-    preset = INDUSTRIES.get(opts.industry, INDUSTRIES["Any"])
-    queries = preset["queries"][:3]
-    per_query = max(10, opts.max_results // len(queries))
-    picked = [t for t in ("Full time", "Part time", "Contract") if t in opts.job_types]
-    job_type = {"Full time": "fulltime", "Part time": "parttime", "Contract": "contract"}[picked[0]] \
-        if len(picked) == 1 else None
     remote_only = "Remote" in opts.job_types and not opts.location
     jobs: dict[str, Job] = {}
-    for query in queries:
-        term = " ".join(x for x in [query, opts.extra_keywords] if x).strip() or "jobs"
+    for term in search_queries(opts):
+        # job_type is NOT sent: the boards then drop every posting the employer didn't tag
+        # with a type, which is most store and restaurant jobs. It's filtered afterwards
+        # instead, keeping untagged postings (see matches_job_type).
         df = scrape(
             site_name=[JOBSPY_SITES[s] for s in sites],
             search_term=term,
@@ -273,8 +285,7 @@ def search_jobspy(opts: SearchOptions, sites: list[str], scrape=None) -> list[Jo
             location=opts.location or None,
             distance=opts.radius_miles,
             is_remote=remote_only,
-            job_type=job_type,
-            results_wanted=per_query,
+            results_wanted=opts.per_query,
             hours_old=opts.max_days_old * 24,
             description_format="markdown",
             verbose=0,
@@ -295,9 +306,8 @@ GENERIC_WORDS = {"jobs", "job", "work", "worker", "associate", "team", "member",
 
 
 def search_terms(opts: SearchOptions) -> list[str]:
-    preset = INDUSTRIES.get(opts.industry, INDUSTRIES["Any"])
-    extra = [t.strip() for t in re.split(r"[,;]", opts.extra_keywords) if t.strip()]
-    return [q for q in preset["queries"] if q] + extra
+    terms = search_queries(opts)
+    return [] if terms == ["jobs"] else terms
 
 
 def is_relevant(job: Job, terms: list[str]) -> bool:
@@ -311,9 +321,10 @@ def is_relevant(job: Job, terms: list[str]) -> bool:
         return True
     title = normalize(job.title)
     desc = normalize(job.description)
+    company = normalize(job.company)
     for term in terms:
         t = normalize(term)
-        if contains(title, t) or contains(desc, t):
+        if contains(title, t) or contains(desc, t) or (company and contains(company, t)):
             return True
         words = [w for w in t.split() if len(w) > 2 and w not in GENERIC_WORDS]
         if any(contains(title, w) for w in words):

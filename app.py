@@ -19,6 +19,7 @@ from jobapp.resume import (docx_to_text, existing_skills, pdf_to_text, read_resu
                            tailor_for_job)
 import os
 
+from jobapp.employers import find_employers, job_links
 from jobapp.qualify import COMMON_CREDENTIALS, EDUCATION_LEVELS, check_fit, fit_label
 from jobapp.scamcheck import assess, risk_label
 from jobapp.search import SOURCES, SearchOptions, search_jobs
@@ -143,25 +144,26 @@ def resume_text() -> str:
 # ------------------------------------------------------------------ search
 with tab_search:
     st.subheader("What are you looking for?")
-    c1, c2, c3 = st.columns([2, 1, 2])
+    c1, c2, c3 = st.columns([2, 1, 3])
     location = c1.text_input("City or ZIP code", value=profile.get("zip") or profile.get("city_state", ""))
-    radius = c2.slider("Radius (miles)", 1, 100, 15)
-    industry = c3.selectbox("Industry", list(INDUSTRIES))
+    radius = c2.slider("Radius (miles)", 1, 100, 25)
+    industries = c3.multiselect("Industries", [i for i in INDUSTRIES if i != "Any"],
+                                default=["Fast food / Restaurant", "Grocery", "Retail"],
+                                help="Pick several. Leave empty to search all jobs.")
     c4, c5, c6 = st.columns([2, 2, 1])
-    job_types = c4.multiselect("Job type", JOB_TYPES, default=["Part time"])
-    extra = c5.text_input("Extra keywords (optional)", placeholder="e.g. cashier, morning shift")
-    max_days = c6.number_input("Posted within (days)", 1, 60, 14)
+    job_types = c4.multiselect("Job type", JOB_TYPES, default=[],
+                               help="Leave empty for any. Postings that don't say are always kept.")
+    extra = c5.text_input("Extra searches (optional, comma separated)",
+                          placeholder="e.g. dollar store, deli, dishwasher")
+    max_days = c6.number_input("Posted within (days)", 1, 90, 30)
     default_sources = ["Indeed"] + (["Adzuna"] if os.environ.get("ADZUNA_APP_ID") else [])
     sources = st.multiselect("Job sites to search", SOURCES, default=default_sources,
                              help="No sign-up needed for any of these except Adzuna. Indeed has the most "
                                   "hourly jobs. Google Jobs, Glassdoor and ZipRecruiter often block automated "
                                   "searches; if one returns nothing, just leave it out.")
 
-    if st.button("🔎 Search", type="primary"):
-        opts = SearchOptions(location=location, radius_miles=radius, job_types=job_types,
-                             industry=industry, extra_keywords=extra, max_days_old=int(max_days),
-                             sources=sources)
-        with st.spinner("Searching..."):
+    def run_search(opts: SearchOptions, merge: bool = False) -> None:
+        with st.spinner("Searching... (a few minutes for big searches)"):
             jobs, warnings = search_jobs(opts)
         for w in warnings:
             st.warning(w)
@@ -176,10 +178,62 @@ with tab_search:
             else:
                 keep.append(job)
         added = tracker.add_jobs(keep)
-        st.session_state["results"] = [j.to_dict() for j in keep]
+        new_results = [j.to_dict() for j in keep]
+        if merge:
+            have = {j["id"] for j in st.session_state.get("results", [])}
+            new_results = st.session_state.get("results", []) + [j for j in new_results if j["id"] not in have]
+            removed = st.session_state.get("removed", []) + removed
+        st.session_state["results"] = new_results
         st.session_state["removed"] = removed
-        st.session_state["industry"] = industry
+        st.session_state["industry"] = (opts.industries or ["Any"])[0]
         st.success(f"Found {len(keep)} jobs ({added} new to you).")
+
+    if st.button("🔎 Search", type="primary"):
+        run_search(SearchOptions(location=location, radius_miles=radius, job_types=job_types,
+                                 industries=industries, extra_keywords=extra, max_days_old=int(max_days),
+                                 sources=sources))
+
+    with st.expander("🗺️ Employers near you (stores and restaurants that may not post on job sites)"):
+        st.write("Lots of local hiring never reaches job sites: Publix only takes applications on its own "
+                 "site, many franchise restaurants use their own hiring pages, and small places just put a "
+                 "sign in the window. This lists the real businesses within your radius, from OpenStreetMap, "
+                 "with links to each one's jobs.")
+        if st.button("Find employers near me", disabled=not location):
+            try:
+                with st.spinner("Looking up businesses on the map..."):
+                    st.session_state["employers"] = [e.to_dict() for e in find_employers(location, radius)]
+                    st.session_state["employers_for"] = (location, radius)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Couldn't load the map data: {e}")
+        emps = st.session_state.get("employers", [])
+        if emps:
+            place, rad = st.session_state["employers_for"]
+            cats = st.multiselect("Show", ["Fast food / Restaurant", "Grocery", "Retail"],
+                                  default=["Fast food / Restaurant", "Grocery", "Retail"], key="emp_cats")
+            rows = []
+            for e in emps:
+                if e["category"] not in cats:
+                    continue
+                links = job_links(e["name"], place, rad)
+                rows.append({"search": False, "employer": e["name"], "type": e["category"],
+                             "locations": e["locations"], "address": e["address"] if e["locations"] == 1 else "",
+                             "google jobs": links["Google jobs"], "indeed": links["Indeed"],
+                             "careers page": links["Careers page"]})
+            st.caption(f"{len(rows)} employers within {rad} miles of {place}. The links open each one's job "
+                       "listings in your browser. Tick employers and press the button below to pull their "
+                       "job-site postings into your results.")
+            picked_rows = st.data_editor(
+                rows, hide_index=True, width="stretch", key="emp_editor",
+                disabled=[k for k in (rows[0] if rows else {}) if k != "search"],
+                column_config={k: st.column_config.LinkColumn(k, display_text="open")
+                               for k in ("google jobs", "indeed", "careers page")},
+            )
+            names = [r["employer"] for r in picked_rows if r["search"]]
+            if st.button(f"🔎 Search job sites for {len(names)} ticked employers", disabled=not names):
+                run_search(SearchOptions(location=location, radius_miles=radius, job_types=job_types,
+                                         industries=["Any"], extra_keywords=", ".join(names[:40]),
+                                         max_days_old=int(max_days), sources=sources, per_query=25),
+                           merge=True)
 
     results = st.session_state.get("results", [])
     if results:

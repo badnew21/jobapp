@@ -156,7 +156,9 @@ def test_jobspy_rows_are_converted():
     assert a.location == "Springfield, IL" and a.description == "Food safety and cash handling"
     b = next(j for j in jobs if j.company == "Grocer")
     assert b.url.startswith("https://indeed.com") and b.salary == "" and b.posted == ""
-    assert calls[0]["job_type"] == "parttime" and calls[0]["hours_old"] == 168
+    assert "job_type" not in calls[0] and calls[0]["hours_old"] == 168   # untagged postings must come back
+    # Every fast-food phrase is searched, not just the first three.
+    assert [c["search_term"] for c in calls] == ["crew member", "cashier restaurant", "cook", "server", "fast food"]
     assert calls[0]["distance"] == 10 and calls[0]["site_name"] == ["indeed"]
 
     # No Adzuna key and Adzuna not picked: no Adzuna error shown.
@@ -193,3 +195,20 @@ def test_google_query_and_blocked_site_warning(monkeypatch):
     assert len(warnings) == 1 and warnings[0].startswith("Google Jobs returned no jobs")
     assert all("google_search_term" not in c for c in calls)  # JobSpy builds Google's query itself
     assert {tuple(c["site_name"]) for c in calls} == {("indeed",), ("google",)}
+
+
+def test_queries_cover_several_industries_and_keywords_separately():
+    from jobapp.search import search_queries
+
+    q = search_queries(SearchOptions(industries=["Fast food / Restaurant", "Grocery"], extra_keywords="dollar store, deli"))
+    assert "crew member" in q and "grocery clerk" in q and "stocker" in q
+    assert q[-2:] == ["dollar store", "deli"]            # searched on their own
+    assert not any("crew member dollar" in x for x in q)  # not glued onto other phrases
+    assert search_queries(SearchOptions(industry="Any")) == ["jobs"]
+
+
+def test_untagged_part_time_jobs_are_kept():
+    untagged = Job(id="u", source="x", title="Cashier", company="c", location="l", description="", url="")
+    full = Job(id="f", source="x", title="Cashier", company="c", location="l", description="", url="",
+               job_type="full_time")
+    assert matches_job_type(untagged, ["Part time"]) and not matches_job_type(full, ["Part time"])

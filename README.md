@@ -86,7 +86,16 @@ Pick the sites under "Job sites to search". None of them need a sign-up, except 
 - **Remotive** has remote jobs, mostly office and tech roles.
 - **Adzuna** is optional. If you want it, get a free key at <https://developer.adzuna.com>, copy `.env.example` to `.env` and paste the App ID and App Key in.
 
-Big chains (McDonald's, Kroger, Walmart and others) often post on their own careers sites too. If a store you like doesn't show up, check its site directly.
+### Employers near you
+
+Job sites only show employers that post there. Publix only takes applications on its own site, many franchise restaurants use their own hiring pages, and small local places just put a sign in the window. Open **🗺️ Employers near you** on the search tab and press **Find employers near me**. It lists the restaurants, grocery stores and shops within your radius, using OpenStreetMap (free, no key), with links to each one's jobs on Google and Indeed and to its careers page. Tick some and press the search button to pull their job-site postings into your results.
+
+### Search tips
+
+- Pick several industries at once. Fast food, grocery and retail are selected by default.
+- Leave **Job type** empty unless she really needs one. Postings that don't state a type are always kept.
+- Use **Extra searches** for anything the industries miss ("dollar store, dishwasher, deli"). Each one is searched separately.
+- Rural areas have fewer postings, so try a 25–50 mile radius and 30+ days.
 
 ## Your data
 
