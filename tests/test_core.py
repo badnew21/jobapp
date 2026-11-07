@@ -168,3 +168,28 @@ def test_jobspy_rows_are_converted():
     finally:
         S.search_jobspy = orig
     assert warnings == [] and len(found) == 2
+
+
+def test_google_query_and_blocked_site_warning(monkeypatch):
+    import pandas as pd
+
+    import jobapp.search as S
+
+    calls = []
+
+    def fake_scrape(**kw):
+        calls.append(kw)
+        if kw["site_name"] == ["google"]:
+            return pd.DataFrame()  # what JobSpy returns when Google blocks it
+        return pd.DataFrame([{"site": "indeed", "id": "1", "job_url": "https://indeed.com/1",
+                              "title": "Cashier", "company": "Publix", "description": "Run the register."}])
+
+    real = S.search_jobspy
+    monkeypatch.setattr(S, "search_jobspy", lambda o, sites: real(o, sites, scrape=fake_scrape))
+    opts = SearchOptions(location="33870", job_types=["Part time"], extra_keywords="cashier",
+                         sources=["Indeed", "Google Jobs"])
+    jobs, warnings = S.search_jobs(opts)
+    assert [j.company for j in jobs] == ["Publix"]
+    assert len(warnings) == 1 and warnings[0].startswith("Google Jobs returned no jobs")
+    assert all("google_search_term" not in c for c in calls)  # JobSpy builds Google's query itself
+    assert {tuple(c["site_name"]) for c in calls} == {("indeed",), ("google",)}

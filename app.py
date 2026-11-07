@@ -154,8 +154,8 @@ with tab_search:
     default_sources = ["Indeed"] + (["Adzuna"] if os.environ.get("ADZUNA_APP_ID") else [])
     sources = st.multiselect("Job sites to search", SOURCES, default=default_sources,
                              help="No sign-up needed for any of these except Adzuna. Indeed has the most "
-                                  "hourly jobs. ZipRecruiter and Glassdoor sometimes block searches; if one "
-                                  "gives an error, just leave it out.")
+                                  "hourly jobs. Google Jobs, Glassdoor and ZipRecruiter often block automated "
+                                  "searches; if one returns nothing, just leave it out.")
 
     if st.button("🔎 Search", type="primary"):
         opts = SearchOptions(location=location, radius_miles=radius, job_types=job_types,

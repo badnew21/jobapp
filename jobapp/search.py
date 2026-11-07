@@ -197,6 +197,13 @@ def search_remotive(opts: SearchOptions, session: requests.Session | None = None
 JOBSPY_SITES = {"Indeed": "indeed", "ZipRecruiter": "zip_recruiter", "Glassdoor": "glassdoor",
                 "Google Jobs": "google"}
 SOURCES = list(JOBSPY_SITES) + ["Adzuna", "Remotive"]
+SITE_HINTS = {
+    "Google Jobs": "Google often blocks automated searches, so this is common. Most Google Jobs listings "
+                   "come from Indeed, ZipRecruiter and company sites, so Indeed covers most of them.",
+    "Glassdoor": "Glassdoor often blocks automated searches. Try again later or leave it out.",
+    "ZipRecruiter": "ZipRecruiter sometimes blocks automated searches. Try again later or leave it out.",
+    "Indeed": "Try a bigger radius, more days, or a different industry.",
+}
 
 
 def _clean(v) -> str:
@@ -258,11 +265,11 @@ def search_jobspy(opts: SearchOptions, sites: list[str], scrape=None) -> list[Jo
     jobs: dict[str, Job] = {}
     for query in queries:
         term = " ".join(x for x in [query, opts.extra_keywords] if x).strip() or "jobs"
-        where = opts.location or "USA"
         df = scrape(
             site_name=[JOBSPY_SITES[s] for s in sites],
             search_term=term,
-            google_search_term=f"{term} jobs near {where} since last {max(1, opts.max_days_old)} days",
+            # No google_search_term: JobSpy builds Google's query itself from these settings
+            # ("cashier jobs Part time near 33870 in the last week"), in wording Google understands.
             location=opts.location or None,
             distance=opts.radius_miles,
             is_remote=remote_only,
@@ -332,12 +339,17 @@ def search_jobs(opts: SearchOptions) -> tuple[list[Job], list[str]]:
     """Run every provider that applies. Returns (jobs, warnings)."""
     jobs: list[Job] = []
     warnings: list[str] = []
-    sites = [s for s in opts.sources if s in JOBSPY_SITES]
-    if sites:
+    picked = [s for s in opts.sources if s in JOBSPY_SITES]
+    # Each site runs on its own, so one site being blocked shows up as its own warning.
+    for site in picked:
         try:
-            jobs += search_jobspy(opts, sites)
+            found = search_jobspy(opts, [site])
         except Exception as e:  # noqa: BLE001 - surface any provider failure to the UI
-            warnings.append(f"{', '.join(sites)}: {e}")
+            warnings.append(f"{site}: {e}")
+            continue
+        if not found:
+            warnings.append(f"{site} returned no jobs. " + SITE_HINTS.get(site, "Try again later."))
+        jobs += found
 
     if "Adzuna" in opts.sources:
         try:
