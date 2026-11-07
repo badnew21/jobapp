@@ -64,7 +64,11 @@ PROFESSIONAL_TITLE = re.compile(
     r"\b(nurse|rn|lpn|physician|doctor|pharmacist|dentist|hygienist|attorney|lawyer|paralegal|engineer|"
     r"developer|programmer|software|architect|accountant|cpa|auditor|therapist|psychologist|counselor|"
     r"social worker|professor|electrician|plumber|hvac|mechanic|welder|machinist|surgeon|veterinarian|"
-    r"vet tech|radiolog|sonograph|phlebotomist|pilot|truck driver|cdl|analyst|scientist|technologist)\b", re.I)
+    r"vet tech|radiolog|sonograph|phlebotomist|pilot|truck driver|cdl|analyst|scientist|technologist|"
+    r"tech lead|full[- ]?stack|front[- ]?end|back[- ]?end|devops|rails|java|python|data engineer|"
+    r"machine learning|qa engineer|sysadmin|network administrator)\b", re.I)
+# Professional titles people do get hired into without the formal background.
+TRAINABLE_TITLES = {"vet tech", "phlebotomist"}
 SOFT = re.compile(r"preferred|a plus|is a plus|nice to have|desired|desirable|bonus|ideally|or equivalent|"
                   r"or related experience|helpful|not required|will train|willing to train", re.I)
 YEARS = re.compile(
@@ -119,7 +123,11 @@ def check_fit(job: dict, quals: dict, resume_text: str = "") -> Fit:
         soft.append(f"Management role ({mm.group(0)}); her experience is shift-level")
     m = PROFESSIONAL_TITLE.search(title)
     if m and not contains(resume, m.group(0).lower()):
-        soft.append(f"\"{m.group(0)}\" jobs usually need specific training")
+        word = m.group(0).lower()
+        if word in TRAINABLE_TITLES:
+            soft.append(f"\"{m.group(0)}\" jobs usually need some training")
+        else:
+            hard.append(f"\"{m.group(0)}\" jobs need training or experience that isn't on her resume")
 
     for line in _lines(f"{title}\n{desc}"):
         low = line.lower()

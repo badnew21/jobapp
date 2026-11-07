@@ -43,3 +43,30 @@ def test_credentials_she_has_count():
     q = QUALS | {"credentials": ["Driver's license", "CNA"]}
     assert fit("Home Health Aide", "Current CNA certification required.", q).level == "good"
     assert fit("Home Health Aide", "Current CNA certification required.").level == "no"
+
+
+def test_tech_titles_are_not_qualified():
+    for title in ["Full-Stack Developer", "Software Engineer, AI Coding Tasks", "Tech Lead Full-Stack Rails Engineer",
+                  "Registered Nurse", "Data Analyst"]:
+        assert fit(title, "Great team, remote.").level == "no", title
+    assert fit("Vet Tech", "Help with animal care.").level == "stretch"
+
+
+def test_search_results_must_match_the_search():
+    from jobapp.search import Job, SearchOptions, is_relevant, search_terms
+
+    def job(title, desc="Remote role with a great team."):
+        return Job(id=title, source="x", title=title, company="c", location="", description=desc, url="")
+
+    terms = search_terms(SearchOptions(industry="Any", extra_keywords="cashier"))
+    assert is_relevant(job("Cashier / Front End"), terms)
+    assert is_relevant(job("Store Associate", "Run the register as a cashier and stock shelves."), terms)
+    for title in ["Full-Stack Developer", "Software Engineer, AI Coding Tasks", "Remote Office Assistant",
+                  "Content Reviewer - United States", "Inside Sales Contractor"]:
+        assert not is_relevant(job(title), terms), title
+
+    terms = search_terms(SearchOptions(industry="Fast food / Restaurant"))
+    assert is_relevant(job("Line Cook"), terms)
+    assert is_relevant(job("Crew Member - Part Time"), terms)
+    assert not is_relevant(job("Tech Lead Full-Stack Rails Engineer"), terms)
+    assert is_relevant(job("Anything at all"), search_terms(SearchOptions(industry="Any")))   # nothing to match

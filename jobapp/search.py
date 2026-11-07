@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, asdict
 import requests
 
 from .industries import INDUSTRIES
+from .keywords import contains, normalize
 
 ADZUNA_URL = "https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
 REMOTIVE_URL = "https://remotive.com/api/remote-jobs"
@@ -183,8 +184,9 @@ def search_remotive(opts: SearchOptions, session: requests.Session | None = None
     params: dict = {"limit": opts.max_results}
     if preset["remotive_category"]:
         params["category"] = preset["remotive_category"]
-    if opts.extra_keywords:
-        params["search"] = opts.extra_keywords
+    search = opts.extra_keywords or next((q for q in preset["queries"] if q), "")
+    if search:
+        params["search"] = search
     resp = s.get(REMOTIVE_URL, params=params, timeout=TIMEOUT)
     resp.raise_for_status()
     return [parse_remotive(i) for i in resp.json().get("jobs", [])]
@@ -280,6 +282,38 @@ def search_jobspy(opts: SearchOptions, sites: list[str], scrape=None) -> list[Jo
 
 # ---------------------------------------------------------------- combined
 
+# Words too general to show a job matches the search on their own.
+GENERIC_WORDS = {"jobs", "job", "work", "worker", "associate", "team", "member", "staff", "remote",
+                 "part", "time", "full", "restaurant", "store", "grocery", "assistant", "general"}
+
+
+def search_terms(opts: SearchOptions) -> list[str]:
+    preset = INDUSTRIES.get(opts.industry, INDUSTRIES["Any"])
+    extra = [t.strip() for t in re.split(r"[,;]", opts.extra_keywords) if t.strip()]
+    return [q for q in preset["queries"] if q] + extra
+
+
+def is_relevant(job: Job, terms: list[str]) -> bool:
+    """True if the job plausibly matches what she searched for.
+
+    Job sites pad results with loosely related postings (a "cashier" search on a
+    remote board returns developer jobs). Keep a job only if its title has one of
+    the search words, or its description has a whole search phrase.
+    """
+    if not terms:
+        return True
+    title = normalize(job.title)
+    desc = normalize(job.description)
+    for term in terms:
+        t = normalize(term)
+        if contains(title, t) or contains(desc, t):
+            return True
+        words = [w for w in t.split() if len(w) > 2 and w not in GENERIC_WORDS]
+        if any(contains(title, w) for w in words):
+            return True
+    return False
+
+
 def matches_job_type(job: Job, job_types: list[str]) -> bool:
     if not job_types:
         return True
@@ -317,11 +351,12 @@ def search_jobs(opts: SearchOptions) -> tuple[list[Job], list[str]]:
         except Exception as e:  # noqa: BLE001
             warnings.append(f"Remotive: {e}")
 
+    terms = search_terms(opts)
     seen: set[tuple[str, str]] = set()
     unique: list[Job] = []
     for job in jobs:
         key = (job.title.lower().strip(), job.company.lower().strip())
-        if key in seen or not matches_job_type(job, opts.job_types):
+        if key in seen or not matches_job_type(job, opts.job_types) or not is_relevant(job, terms):
             continue
         seen.add(key)
         unique.append(job)
