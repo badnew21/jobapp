@@ -124,3 +124,47 @@ def test_clean_title_and_filename():
 
     assert clean_title("Crew Member - Part Time - Chicago, IL") == "Crew Member"
     assert resume_filename({"company": "Kroger/Ralphs Inc."}, "Jane Doe", "pdf") == "Jane Doe Resume - KrogerRalphs Inc.pdf"
+
+
+def test_jobspy_rows_are_converted():
+    import pandas as pd
+    from jobspy.model import JobPost, Location
+
+    from jobapp.search import search_jobs, search_jobspy
+
+    calls = []
+
+    def fake_scrape(**kw):
+        calls.append(kw)
+        posts = [
+            JobPost(id="in-1", site="indeed", job_url="https://indeed.com/viewjob?jk=1",
+                    job_url_direct="https://careers.burgerco.com/apply/1", title="Crew Member",
+                    company="Burger Co", location=Location(city="Springfield", state="IL"),
+                    job_type=["parttime"], min_amount=14.0, max_amount=17.0, interval="hourly",
+                    is_remote=False, description="**Food safety** and cash handling"),
+            JobPost(id="in-2", site="indeed", job_url="https://indeed.com/viewjob?jk=2", title="Cashier",
+                    company="Grocer"),
+        ]
+        return pd.DataFrame([p.model_dump() for p in posts])
+
+    opts = SearchOptions(location="62701", radius_miles=10, job_types=["Part time"],
+                         industry="Fast food / Restaurant", max_days_old=7)
+    jobs = search_jobspy(opts, ["Indeed"], scrape=fake_scrape)
+    a = next(j for j in jobs if j.company == "Burger Co")
+    assert a.url == "https://careers.burgerco.com/apply/1"   # company site preferred
+    assert a.job_type == "part_time" and a.salary == "$14 - $17/hr"
+    assert a.location == "Springfield, IL" and a.description == "Food safety and cash handling"
+    b = next(j for j in jobs if j.company == "Grocer")
+    assert b.url.startswith("https://indeed.com") and b.salary == "" and b.posted == ""
+    assert calls[0]["job_type"] == "parttime" and calls[0]["hours_old"] == 168
+    assert calls[0]["distance"] == 10 and calls[0]["site_name"] == ["indeed"]
+
+    # No Adzuna key and Adzuna not picked: no Adzuna error shown.
+    import jobapp.search as S
+    orig = S.search_jobspy
+    S.search_jobspy = lambda o, sites: search_jobspy(o, sites, scrape=fake_scrape)
+    try:
+        found, warnings = search_jobs(opts)
+    finally:
+        S.search_jobspy = orig
+    assert warnings == [] and len(found) == 2

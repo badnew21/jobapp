@@ -1,8 +1,9 @@
 """Job search across public job APIs.
 
 Providers:
-  * Adzuna  - free API key (https://developer.adzuna.com). Handles local jobs:
-              location + radius, full/part time, category.
+  * JobSpy   - no key needed. Reads public listings from Indeed, ZipRecruiter,
+               Glassdoor and Google Jobs (location, radius, job type, age).
+  * Adzuna   - optional, free API key (https://developer.adzuna.com).
   * Remotive - no key needed. Remote jobs only.
 """
 
@@ -54,6 +55,7 @@ class SearchOptions:
     max_days_old: int = 14
     max_results: int = 100
     country: str = "us"
+    sources: list[str] = field(default_factory=lambda: ["Indeed"])
 
 
 def strip_html(text: str) -> str:
@@ -186,6 +188,92 @@ def search_remotive(opts: SearchOptions, session: requests.Session | None = None
     return [parse_remotive(i) for i in resp.json().get("jobs", [])]
 
 
+# ---------------------------------------------------------------- JobSpy
+
+JOBSPY_SITES = {"Indeed": "indeed", "ZipRecruiter": "zip_recruiter", "Glassdoor": "glassdoor",
+                "Google Jobs": "google"}
+SOURCES = list(JOBSPY_SITES) + ["Adzuna", "Remotive"]
+
+
+def _clean(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, float) and v != v:  # NaN from pandas
+        return ""
+    return str(v)
+
+
+def _jobspy_salary(row: dict) -> str:
+    lo, hi = row.get("min_amount"), row.get("max_amount")
+    lo = None if _clean(lo) == "" else float(lo)
+    hi = None if _clean(hi) == "" else float(hi)
+    text = _format_salary(lo, hi)
+    interval = _clean(row.get("interval"))
+    if text and interval:
+        text += {"hourly": "/hr", "yearly": "/yr", "monthly": "/mo", "weekly": "/wk", "daily": "/day"}.get(interval, "")
+    return text
+
+
+def parse_jobspy(row: dict) -> Job:
+    types = _clean(row.get("job_type"))
+    first = types.split(",")[0].strip()
+    title, desc = _clean(row.get("title")), _clean(row.get("description"))
+    desc = re.sub(r"[*_#`]+|\\", "", desc)  # strip markdown markup
+    remote = row.get("is_remote")
+    return Job(
+        id=f"{_clean(row.get('site'))}:{_clean(row.get('id')) or _clean(row.get('job_url'))}",
+        source=_clean(row.get("site")).replace("_", " ").title(),
+        title=title,
+        company=_clean(row.get("company")),
+        location=_clean(row.get("location")),
+        description=desc,
+        # The company's own application page skips the job board's login wall.
+        url=_clean(row.get("job_url_direct")) or _clean(row.get("job_url")),
+        job_type={"fulltime": "full_time", "parttime": "part_time"}.get(first, first),
+        remote=bool(remote) if _clean(remote) != "" else bool(REMOTE_PATTERN.search(f"{title} {desc}")),
+        salary=_jobspy_salary(row),
+        posted=_clean(row.get("date_posted"))[:10],
+    )
+
+
+def search_jobspy(opts: SearchOptions, sites: list[str], scrape=None) -> list[Job]:
+    if scrape is None:
+        try:
+            from jobspy import scrape_jobs as scrape
+        except ImportError as e:
+            raise RuntimeError("JobSpy isn't installed. Run: python -m pip install -r requirements.txt") from e
+    preset = INDUSTRIES.get(opts.industry, INDUSTRIES["Any"])
+    queries = preset["queries"][:3]
+    per_query = max(10, opts.max_results // len(queries))
+    picked = [t for t in ("Full time", "Part time", "Contract") if t in opts.job_types]
+    job_type = {"Full time": "fulltime", "Part time": "parttime", "Contract": "contract"}[picked[0]] \
+        if len(picked) == 1 else None
+    remote_only = "Remote" in opts.job_types and not opts.location
+    jobs: dict[str, Job] = {}
+    for query in queries:
+        term = " ".join(x for x in [query, opts.extra_keywords] if x).strip() or "jobs"
+        where = opts.location or "USA"
+        df = scrape(
+            site_name=[JOBSPY_SITES[s] for s in sites],
+            search_term=term,
+            google_search_term=f"{term} jobs near {where} since last {max(1, opts.max_days_old)} days",
+            location=opts.location or None,
+            distance=opts.radius_miles,
+            is_remote=remote_only,
+            job_type=job_type,
+            results_wanted=per_query,
+            hours_old=opts.max_days_old * 24,
+            description_format="markdown",
+            verbose=0,
+        )
+        for row in df.to_dict("records"):
+            job = parse_jobspy(row)
+            jobs.setdefault(job.id, job)
+        if len(jobs) >= opts.max_results:
+            break
+    return list(jobs.values())
+
+
 # ---------------------------------------------------------------- combined
 
 def matches_job_type(job: Job, job_types: list[str]) -> bool:
@@ -206,15 +294,20 @@ def search_jobs(opts: SearchOptions) -> tuple[list[Job], list[str]]:
     """Run every provider that applies. Returns (jobs, warnings)."""
     jobs: list[Job] = []
     warnings: list[str] = []
-    only_remote = opts.job_types == ["Remote"]
+    sites = [s for s in opts.sources if s in JOBSPY_SITES]
+    if sites:
+        try:
+            jobs += search_jobspy(opts, sites)
+        except Exception as e:  # noqa: BLE001 - surface any provider failure to the UI
+            warnings.append(f"{', '.join(sites)}: {e}")
 
-    if opts.location or not only_remote:
+    if "Adzuna" in opts.sources:
         try:
             jobs += search_adzuna(opts)
-        except Exception as e:  # noqa: BLE001 - surface any provider failure to the UI
+        except Exception as e:  # noqa: BLE001
             warnings.append(f"Adzuna: {e}")
 
-    if "Remote" in opts.job_types:
+    if "Remotive" in opts.sources or ("Remote" in opts.job_types and not sites):
         try:
             jobs += search_remotive(opts)
         except Exception as e:  # noqa: BLE001

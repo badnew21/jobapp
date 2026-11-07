@@ -17,7 +17,9 @@ from jobapp.keywords import analyze
 from jobapp.profile import ANSWERS, DATA_DIR, FIELDS, load_profile, save_profile
 from jobapp.resume import (docx_to_text, existing_skills, pdf_to_text, read_resume, resume_filename,
                            tailor_for_job)
-from jobapp.search import SearchOptions, search_jobs
+import os
+
+from jobapp.search import SOURCES, SearchOptions, search_jobs
 from jobapp.tracker import STATUSES, Tracker
 
 load_dotenv()
@@ -123,10 +125,16 @@ with tab_search:
     job_types = c4.multiselect("Job type", JOB_TYPES, default=["Part time"])
     extra = c5.text_input("Extra keywords (optional)", placeholder="e.g. cashier, morning shift")
     max_days = c6.number_input("Posted within (days)", 1, 60, 14)
+    default_sources = ["Indeed"] + (["Adzuna"] if os.environ.get("ADZUNA_APP_ID") else [])
+    sources = st.multiselect("Job sites to search", SOURCES, default=default_sources,
+                             help="No sign-up needed for any of these except Adzuna. Indeed has the most "
+                                  "hourly jobs. ZipRecruiter and Glassdoor sometimes block searches; if one "
+                                  "gives an error, just leave it out.")
 
     if st.button("🔎 Search", type="primary"):
         opts = SearchOptions(location=location, radius_miles=radius, job_types=job_types,
-                             industry=industry, extra_keywords=extra, max_days_old=int(max_days))
+                             industry=industry, extra_keywords=extra, max_days_old=int(max_days),
+                             sources=sources)
         with st.spinner("Searching..."):
             jobs, warnings = search_jobs(opts)
         for w in warnings:

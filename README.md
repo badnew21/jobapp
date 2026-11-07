@@ -23,9 +23,7 @@ Some things to know:
 
 You need Python 3.10 or newer ([python.org](https://www.python.org/downloads/); on Windows, tick "Add Python to PATH" during install).
 
-1. Get a free Adzuna API key at <https://developer.adzuna.com>. Sign up, then copy the **App ID** and **App Key** from the dashboard.
-2. Copy `.env.example` to `.env` and paste the two values in.
-3. Install everything:
+1. Install everything:
 
    ```bash
    pip install -r requirements.txt
@@ -57,8 +55,12 @@ The first time, some sites (Indeed, Workday and so on) will ask you to sign in o
 
 ## Where job listings come from
 
-- **Adzuna** collects postings from thousands of job boards and company sites. It covers local jobs with location and radius filters.
-- **Remotive** is used for remote jobs. It needs no key, but it leans toward office and tech roles.
+Pick the sites under "Job sites to search". None of them need a sign-up, except Adzuna.
+
+- **Indeed** (default) has the most hourly and local jobs. Listings are read with the open-source [JobSpy](https://github.com/speedyapply/JobSpy) library. When a posting links to the company's own application page, the app applies there, which skips Indeed's login.
+- **ZipRecruiter, Glassdoor, Google Jobs** also work through JobSpy. They sometimes block searches; if one shows an error, leave it out.
+- **Remotive** has remote jobs, mostly office and tech roles.
+- **Adzuna** is optional. If you want it, get a free key at <https://developer.adzuna.com>, copy `.env.example` to `.env` and paste the App ID and App Key in.
 
 Big chains (McDonald's, Kroger, Walmart and others) often post on their own careers sites too. If a store you like doesn't show up, check its site directly.
 
