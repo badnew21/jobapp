@@ -30,6 +30,7 @@ from pathlib import Path
 
 from .profile import DATA_DIR, load_profile
 from .resume import read_resume, resume_filename, tailor_for_job
+from .qualify import check_fit
 from .scamcheck import assess
 from .tracker import Tracker
 
@@ -506,7 +507,11 @@ def run(limit: int | None = None, job_ids: list[str] | None = None, mode: str = 
             label = f"[{n}/{len(jobs)}] {job['title']} - {job['company']}"
             state.update(decision=None, fill=False, info=label)
             print(label, flush=True)
-            gate = safety_gate(job, tracker, profile)
+            fit = check_fit(job, {"education": profile.get("education") or "High school / GED",
+                                  "credentials": profile.get("credentials", []),
+                                  "years": profile.get("work_years")}, base_text)
+            gate = (("skipped", "Not qualified: " + "; ".join(fit.reasons)) if fit.level == "no"
+                    else safety_gate(job, tracker, profile))
             if gate and mode == "auto":
                 tracker.set_status(job["id"], *gate)
                 print(f"  -> {gate[0]}: {gate[1]}", flush=True)

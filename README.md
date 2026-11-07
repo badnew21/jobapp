@@ -9,13 +9,16 @@ A small app that runs on your own computer. It does four things:
 
 ## Filtering out jobs she isn't qualified for
 
-Fill in **Qualifications** on tab 1: highest education, total years of work experience, and the licenses or certifications she currently holds. Each search result then gets a fit rating:
+Search results automatically leave out jobs she can't get. They never show up in the results, the Tracker or the queue:
 
-- ✅ **Good fit:** nothing in the posting rules her out.
-- 🟨 **Stretch:** something is "preferred", it's a manager title above shift level, it asks for a short certification like CPR, or it asks for 1–2 years in an area that isn't on her resume. Worth applying.
-- ⛔ **Not qualified:** it *requires* a degree above hers, a license she doesn't hold (RN, CDL, CNA and so on), 3+ years in an area that isn't on her resume, more years than she has in total, or it's a senior or director role.
+- anything that mentions a **college degree** (associate or higher), even if it's only "preferred". "No degree required" and job titles like "Sales Associate" don't count.
+- jobs that **require a license** she doesn't hold (RN, CDL, CNA and so on)
+- **senior and director** roles, and **professional titles** like developer, engineer, nurse or accountant, unless that work is on her resume
+- jobs asking for **more years** than she has, or 3+ years in an area that isn't on her resume
 
-⛔ jobs are hidden by default (untick "Hide jobs she isn't qualified for" to see them), and "Select all" leaves them out. "Why N jobs are a stretch or not a fit" under the results gives the reason for each one.
+Fill in **Qualifications** on tab 1 (education, years of experience, licenses she holds) so this works properly. A collapsed "Removed N jobs" list under the results shows what was left out and why.
+
+What's left is rated ✅ **Good fit** or 🟨 **Stretch** (something preferred she doesn't have, a manager title above shift level, or a short certification like CPR).
 
 ## Scam check
 

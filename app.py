@@ -61,8 +61,8 @@ with tab_profile:
             profile = load_profile()
 
     st.subheader("Qualifications")
-    st.caption("Used to hide jobs she can't get: ones that require a degree, license or more experience "
-               "than she has.")
+    st.caption("Search results automatically leave out jobs she can't get: anything asking for a college "
+               "degree, a license she doesn't hold, or more experience than she has.")
     with st.form("quals"):
         c1, c2 = st.columns(2)
         edu_opts = ["(not set)"] + EDUCATION_LEVELS
@@ -128,6 +128,11 @@ with tab_profile:
             st.text(text)
 
 
+def qualifications() -> dict:
+    return {"education": profile.get("education") or "High school / GED",
+            "credentials": profile.get("credentials", []), "years": profile.get("work_years")}
+
+
 def resume_text() -> str:
     path = profile.get("resume_path")
     if not path or not Path(path).exists():
@@ -160,10 +165,21 @@ with tab_search:
             jobs, warnings = search_jobs(opts)
         for w in warnings:
             st.warning(w)
-        added = tracker.add_jobs(jobs)
-        st.session_state["results"] = [j.to_dict() for j in jobs]
+        # Jobs she can't get (degree, license, senior or technical roles) are dropped here,
+        # so they never reach the results, the tracker or the queue.
+        quals, rt = qualifications(), resume_text()
+        keep, removed = [], []
+        for job in jobs:
+            fit = check_fit(job.to_dict(), quals, rt)
+            if fit.level == "no":
+                removed.append({"title": job.title, "company": job.company, "why": "; ".join(fit.reasons)})
+            else:
+                keep.append(job)
+        added = tracker.add_jobs(keep)
+        st.session_state["results"] = [j.to_dict() for j in keep]
+        st.session_state["removed"] = removed
         st.session_state["industry"] = industry
-        st.success(f"Found {len(jobs)} jobs ({added} new to you).")
+        st.success(f"Found {len(keep)} jobs ({added} new to you).")
 
     results = st.session_state.get("results", [])
     if results:
@@ -182,18 +198,15 @@ with tab_search:
         for j in results:
             risks[j["id"]] = tracker.research(j["id"]) or assess(j).to_dict()
         labels = {k: risk_label(r["level"]) for k, r in risks.items()}
-        quals = {"education": profile.get("education") or "High school / GED",
-                 "credentials": profile.get("credentials", []), "years": profile.get("work_years")}
-        fits = {j["id"]: check_fit(j, quals, rt) for j in results}
-        hide = st.checkbox("Hide jobs she isn't qualified for", value=True)
-        not_q = [j for j in results if fits[j["id"]].level == "no"]
-        if not profile.get("education"):
-            st.info("Tip: fill in *Qualifications* in tab 1 so jobs that need a degree are filtered properly.")
-        shown = [j for j in results if not (hide and fits[j["id"]].level == "no")]
-        if hide and not_q:
-            st.caption(f"Hiding {len(not_q)} jobs that need a degree, license or experience she doesn't have.")
+        fits = {j["id"]: check_fit(j, qualifications(), rt) for j in results}
+        results = [j for j in results if fits[j["id"]].level != "no"]  # if her qualifications changed
+        removed = st.session_state.get("removed", [])
+        if removed:
+            with st.expander(f"Removed {len(removed)} jobs that need a degree, license or experience she "
+                             "doesn't have"):
+                st.dataframe(removed, hide_index=True, width="stretch")
         rows = []
-        for j in shown:
+        for j in results:
             status = tracker.status_of(j["id"]) or "new"
             score = analyze(rt, [j["description"]], st.session_state.get("industry", "Any")).score if rt else None
             rows.append({
@@ -206,15 +219,14 @@ with tab_search:
         st.caption("Tick the jobs you want to apply to, then press *Queue selected*. "
                    "“match %” is how many of the posting's keywords your resume already has.")
         c1, c2 = st.columns(2)
-        select_all = c1.checkbox("Select all new jobs (except possible scams and jobs she doesn't qualify for)")
+        select_all = c1.checkbox("Select all new jobs (except possible scams)")
         if select_all:
             for r in rows:
-                if r["status"] == "new" and risks[r["id"]]["level"] != "high" and fits[r["id"]].level != "no":
+                if r["status"] == "new" and risks[r["id"]]["level"] != "high":
                     r["queue"] = True
         edited: list[dict] = []
         if not rows:
-            st.info("Every job in these results needs something she doesn't have. Try another industry "
-                    "or untick *Hide jobs she isn't qualified for* to see them.")
+            st.info("Every job in these results needs something she doesn't have. Try another industry.")
         else:
             edited = st.data_editor(
                 rows, hide_index=True, width="stretch", disabled=[k for k in rows[0] if k != "queue"],
@@ -232,10 +244,10 @@ with tab_search:
             st.success(f"Queued {n} jobs. Go to the Apply tab.")
             st.rerun()
 
-        stretch = [j for j in results if fits[j["id"]].level != "good"]
+        stretch = [j for j in results if fits[j["id"]].level == "stretch"]
         if stretch:
-            with st.expander(f"Why {len(stretch)} jobs are a stretch or not a fit"):
-                for j in sorted(stretch, key=lambda x: fits[x["id"]].level != "no"):
+            with st.expander(f"Why {len(stretch)} jobs are a stretch"):
+                for j in stretch:
                     f = fits[j["id"]]
                     st.markdown(f"**{f.label} · {j['title']} — {j['company'] or '(no company)'}**  \n"
                                 + "; ".join(f.reasons))

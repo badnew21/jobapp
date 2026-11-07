@@ -30,8 +30,6 @@ def test_hard_requirements_rule_jobs_out():
 
 
 def test_preferred_or_quick_requirements_are_a_stretch():
-    r = fit("Office Assistant", "Associate degree preferred. Data entry and Excel.")
-    assert r.level == "stretch" and r.reasons == ["Prefers associate degree"]
     assert fit("Daycare Assistant", "CPR certification required.").level == "stretch"
     assert fit("Assistant Store Manager", "Customer service and cash handling.").level == "stretch"
     assert fit("Vet Tech", "Help with animal care.").level == "stretch"
@@ -70,3 +68,18 @@ def test_search_results_must_match_the_search():
     assert is_relevant(job("Crew Member - Part Time"), terms)
     assert not is_relevant(job("Tech Lead Full-Stack Rails Engineer"), terms)
     assert is_relevant(job("Anything at all"), search_terms(SearchOptions(industry="Any")))   # nothing to match
+
+
+def test_any_degree_mention_removes_the_job():
+    r = fit("Office Assistant", "Associate degree preferred. Data entry and Excel.")
+    assert r.level == "no" and r.reasons == ["Prefers associate degree"]
+    assert fit("Receptionist", "Bachelor's degree or equivalent experience.").level == "no"
+    assert fit("Clerk", "A college degree is a plus.").level == "no"
+
+
+def test_degree_wording_traps():
+    # Job titles and "no degree" wording aren't degree requirements.
+    assert fit("Sales Associate", "Sales associate with a high school diploma or GED.").level == "good"
+    assert fit("Grocery Clerk", "No college degree required! We train.").level == "good"
+    assert fit("Cashier", "A degree is not required for this role.").level == "good"
+    assert fit("Stocker", "Associates must lift 50 lbs. High school graduates welcome.").level == "good"

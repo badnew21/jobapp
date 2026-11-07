@@ -24,10 +24,18 @@ EDUCATION_LEVELS = ["No diploma", "High school / GED", "Some college", "Associat
 # (rank needed, pattern). Rank indexes EDUCATION_LEVELS.
 DEGREE_PATTERNS = [
     (5, r"\b(master'?s|mba|m\.s\.|msw|ph\.?d|doctorate|doctoral)\b"),
-    (4, r"\b(bachelor'?s|b\.?s\.?|b\.?a\.?|bsn|4[- ]year degree|four[- ]year degree|college degree|university degree)\b"),
-    (3, r"\b(associate'?s?( degree)?|a\.?a\.?s?\.?|2[- ]year degree|two[- ]year degree)\b(?! (of|with|to))"),
+    (4, r"\b(bachelor'?s|b\.s\.|b\.a\.|bsn|4[- ]year degree|four[- ]year degree|college degree|university degree)"),
+    # Not just "associate": that's also a job title (Sales Associate).
+    (3, r"\b(associate'?s? degree|associate of (arts|science|applied science)|a\.a\.s?\.?|a\.s\. degree|"
+        r"2[- ]year degree|two[- ]year degree)"),
     (1, r"\b(high school (diploma|graduate)|ged)\b"),
 ]
+
+# Any degree at this level or above removes the job, even if only "preferred":
+# postings that mention one aren't the entry-level jobs she's after.
+DEGREE_CUTOFF = 3
+NO_DEGREE = re.compile(r"\bno (college |university )?degree|degree (is )?not (required|necessary|needed)|"
+                       r"without a degree|don'?t need a degree|no diploma (is )?required|regardless of degree", re.I)
 
 # Licenses / certifications employers require. (name, pattern)
 CREDENTIALS = [
@@ -134,10 +142,13 @@ def check_fit(job: dict, quals: dict, resume_text: str = "") -> Fit:
         is_soft = _is_soft(line)
 
         for rank, pattern in DEGREE_PATTERNS:
+            if NO_DEGREE.search(low):
+                break
             if re.search(pattern, low) and re.search(r"degree|diploma|ged|graduate|bsn|mba|ph\.?d", low):
                 if rank > have_edu:
-                    (soft if is_soft else hard).append(
-                        f"{'Prefers' if is_soft else 'Requires'} {EDUCATION_LEVELS[rank].lower()}")
+                    wording = "Prefers" if is_soft else "Requires"
+                    reason = f"{wording} {EDUCATION_LEVELS[rank].lower()}"
+                    (hard if rank >= DEGREE_CUTOFF or not is_soft else soft).append(reason)
                 break
 
         for name, pattern in CREDENTIALS:
