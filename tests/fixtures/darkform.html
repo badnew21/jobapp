@@ -1,0 +1,15 @@
+<html><body><form method="get" action="after_submit.html">
+<label for="fn">First Name</label><input id="fn" name="fn" required>
+<label for="ln">Last Name</label><input id="ln" name="ln" required>
+<label>Email <input type="email" name="email" required></label>
+<label for="ph">Phone</label><input id="ph" name="ph" type="tel" required>
+<label for="cv">Resume</label><input id="cv" type="file" required>
+<label><input type="checkbox" name="sms" checked> Send me text message alerts about new jobs</label>
+<label><input type="checkbox" name="share" checked> Share my profile with partner employers</label>
+<label><input type="checkbox" name="terms" required> I agree to the terms of use</label>
+<button type="submit">Submit application</button>
+</form>
+<script>
+document.querySelector('#fn').addEventListener('input', () => { window.onbeforeunload = (e) => { e.preventDefault(); e.returnValue = ''; }; });
+document.querySelector('form').addEventListener('submit', () => { window.onbeforeunload = null; });
+</script></body></html>

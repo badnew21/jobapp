@@ -1,0 +1,11 @@
+<html><body><h1>Crew Member</h1>
+<div role="dialog" aria-modal="true" class="modal" style="position:fixed;inset:0;background:#fff">
+<form onsubmit="event.preventDefault(); location.href='thanks.html'">
+  <p>Upload your resume to apply. You can also sign up for job alerts later.</p>
+  <label for="fn">First Name</label><input id="fn" required>
+  <label for="ln">Last Name</label><input id="ln" required>
+  <label>Email <input type="email" name="email" required></label>
+  <label for="cv">Resume</label><input id="cv" type="file" required>
+  <button type="button" aria-label="Close" onclick="document.title='CLOSED'">×</button>
+  <button type="submit">Submit</button>
+</form></div></body></html>

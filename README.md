@@ -31,6 +31,19 @@ Every job gets a safety rating in the search results: 🟢 Looks OK, 🟡 Check 
 
 A green rating isn't a guarantee. A real employer never asks you to pay to get the job, and never needs your SSN or bank details before an interview.
 
+## Website tricks it handles
+
+- **Popups**: newsletter and "10% off" signups, cookie banners, "get job alerts", "download our app" and chat bubbles get closed or hidden. It never types her email into one of them. A popup that holds the application itself is left alone.
+- **Pre-ticked boxes** that sign her up for text messages, job alerts or sharing her profile with "partners" get unticked. They're never ticked as an "I agree" box.
+- **Redirects**: tracking links, delayed redirects and "checking your browser" screens are waited out. If it bounces through more than four job sites without reaching a form, it gives up and says so.
+- **Login walls**: if there's an "apply as guest" option it uses that, otherwise the job goes to Needs review.
+- **"Apply to these 10 similar jobs"** pages after submitting are never clicked. Once it has submitted, the only button it will press is an actual Submit.
+- **Payment or card fields**: it stops and skips the job (likely a scam). Requests for bank details or an SSN go to Needs review; it never fills them in.
+- **Closed postings** are marked skipped; **"you already applied"** is marked applied.
+- **Verification codes, assessments and video interviews** go to Needs review.
+- **"Leave this page?" boxes** and location/notification prompts are answered or blocked automatically.
+- **Only one run at a time.** The Start buttons are disabled while it's applying, and **⏹ Stop** finishes the current job and stops. If an old browser window still has the saved profile locked, it carries on with a fresh browser instead of crashing.
+
 ## What happens when it can't finish a job
 
 It never guesses. If an application has a CAPTCHA, wants you to log in or create an account, asks a question you haven't answered (felony history, a custom essay question and so on), or shows an error after Submit, the job goes to **Needs review** with the reason. Press **Open these so I can finish them** on the Apply tab and it opens each one, filled in as far as it got.

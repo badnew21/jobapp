@@ -10,7 +10,7 @@ import pytest
 
 pw = pytest.importorskip("playwright.sync_api")
 
-from jobapp.apply_assist import auto_apply  # noqa: E402
+from jobapp.apply_assist import _on_dialog, auto_apply, dismiss_popups  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PROFILE = {
@@ -36,6 +36,7 @@ def ctx():
     with pw.sync_playwright() as p:
         browser = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH") or None)
         context = browser.new_context()
+        context.on("page", lambda pg: pg.on("dialog", _on_dialog))
         context.new_page()
         yield context
         browser.close()
@@ -75,3 +76,56 @@ def test_unknown_question_is_not_guessed(server, ctx, resume):
 def test_missing_consent_setting_blocks_submit(server, ctx, resume):
     status, note = auto_apply(ctx, {"url": f"{server}/form.html"}, PROFILE | {"auto_agree_terms": False}, resume)
     assert status == "needs_review" and "privacy" in note
+
+
+def test_popups_closed_and_dark_pattern_boxes_unticked(server, ctx, resume):
+    status, note = auto_apply(ctx, {"url": f"{server}/popup_job.html"}, PROFILE, resume)
+    # The form posts to a "similar jobs" page with no confirmation. It must NOT click "Apply" there
+    # (that would apply her to other jobs) and must say it isn't sure.
+    assert status == "needs_review" and "check" in note
+    url = ctx.pages[-1].url
+    assert "after_submit.html" in url, url
+    assert "terms=on" in url                      # required "I agree" ticked
+    assert "sms=on" not in url and "share=on" not in url   # pre-ticked marketing boxes unticked
+
+
+def test_newsletter_popup_not_filled_or_submitted(server, ctx, resume):
+    page = ctx.pages[0]
+    page.goto(f"{server}/popup_job.html")
+    assert dismiss_popups(page) >= 2               # newsletter + cookie banner
+    assert page.locator("input[name=newsletter_email]").count() == 0
+    assert page.title() != "SUBSCRIBED"
+    assert not page.locator("#intercom-container").is_visible()
+
+
+def test_application_inside_a_modal_is_not_dismissed(server, ctx, resume):
+    status, note = auto_apply(ctx, {"url": f"{server}/modal_form.html"}, PROFILE, resume)
+    assert (status, note) == ("applied", "Confirmation page seen")
+
+
+def test_closed_posting_is_skipped(server, ctx, resume):
+    assert auto_apply(ctx, {"url": f"{server}/closed.html"}, PROFILE, resume) == (
+        "skipped", "Posting is closed or expired")
+
+
+def test_guest_option_used_on_login_wall(server, ctx, resume):
+    status, _ = auto_apply(ctx, {"url": f"{server}/guest.html"}, PROFILE, resume)
+    assert status == "applied"
+
+
+def test_payment_page_is_skipped(server, ctx, resume):
+    status, note = auto_apply(ctx, {"url": f"{server}/pay.html"}, PROFILE, resume)
+    assert status == "skipped" and "payment" in note
+
+
+def test_redirect_is_followed(server, ctx, resume):
+    status, _ = auto_apply(ctx, {"url": f"{server}/redirect.html"}, PROFILE, resume)
+    assert status == "applied"
+
+
+def test_leave_page_dialog_does_not_block_next_job(server, ctx, resume):
+    page = ctx.pages[0]
+    page.goto(f"{server}/darkform.html")
+    page.fill("#fn", "Jane")                      # arms the "Leave site?" dialog
+    status, _ = auto_apply(ctx, {"url": f"{server}/job.html"}, PROFILE, resume)
+    assert status == "applied"

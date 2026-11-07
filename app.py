@@ -19,6 +19,7 @@ from jobapp.resume import (docx_to_text, existing_skills, pdf_to_text, read_resu
                            tailor_for_job)
 import os
 
+from jobapp.apply_assist import request_stop, running_pid
 from jobapp.employers import find_employers, job_links
 from jobapp.qualify import COMMON_CREDENTIALS, EDUCATION_LEVELS, check_fit, fit_label
 from jobapp.scamcheck import assess, risk_label
@@ -403,6 +404,9 @@ LOG = DATA_DIR / "apply_log.txt"
 
 
 def launch(args: list[str]) -> None:
+    if running_pid():  # second safety net; the buttons are already disabled
+        st.warning("It's already applying. Wait for it to finish or press Stop.")
+        return
     DATA_DIR.mkdir(exist_ok=True)
     log = open(LOG, "w")  # noqa: SIM115 - handed to the child process
     subprocess.Popen([sys.executable, "-u", "-m", "jobapp.apply_assist", *args],
@@ -412,6 +416,13 @@ def launch(args: list[str]) -> None:
 with tab_apply:
     queued = tracker.rows("queued")
     review = tracker.rows("needs_review")
+    busy = running_pid()
+    if busy:
+        c1, c2 = st.columns([4, 1])
+        c1.info("⏳ Applying right now. Progress is shown below; press Refresh to update it.")
+        if c2.button("⏹ Stop"):
+            request_stop()
+            st.success("Stopping after the current job...")
     st.subheader(f"{len(queued)} jobs queued")
     if queued:
         st.dataframe([{"title": j["title"], "company": j["company"], "location": j["location"]}
@@ -450,7 +461,7 @@ with tab_apply:
             "need you signed in to them are best done in review mode.")
         if not_ready:
             st.warning("Fill in first (tab 1): " + ", ".join(not_ready))
-        if st.button("▶️ Start", type="primary", disabled=not queued or bool(not_ready)):
+        if st.button("▶️ Start", type="primary", disabled=not queued or bool(not_ready) or bool(busy)):
             args = ["--mode", "auto", "--limit", str(int(limit)), "--daily-cap", str(int(cap))]
             args += ["--dry-run"] if dry else []
             args += ["--headless"] if headless else []
@@ -461,7 +472,7 @@ with tab_apply:
             "It opens each job, fills in what it can and attaches that job's resume. You answer anything "
             "left and press the site's Submit, then use the bar at the bottom of the window: "
             "**Fill this form** (after the site changes page), **I applied ✓**, **Skip**, **Stop**.")
-        if st.button("▶️ Start", type="primary", disabled=not queued):
+        if st.button("▶️ Start", type="primary", disabled=not queued or bool(busy)):
             launch(["--mode", "review"])
             st.success("Browser opening...")
 
@@ -474,7 +485,7 @@ with tab_apply:
     if review:
         st.dataframe([{"title": j["title"], "company": j["company"], "why": j["notes"]} for j in review],
                      hide_index=True, width="stretch")
-        if st.button("Open these so I can finish them"):
+        if st.button("Open these so I can finish them", disabled=bool(busy)):
             launch(["--mode", "review", "--status", "needs_review"])
             st.success("Browser opening...")
 

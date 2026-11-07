@@ -35,9 +35,13 @@ from .scamcheck import assess
 from .tracker import Tracker
 
 BROWSER_PROFILE = DATA_DIR / "browser"
+LOCK_FILE = DATA_DIR / "apply.lock"     # holds the PID of the run in progress
+STOP_FILE = DATA_DIR / "apply.stop"     # the app's Stop button creates this
+BROWSER_ARGS = ["--deny-permission-prompts", "--disable-notifications", "--disable-geolocation"]
 RESUME_DIR = DATA_DIR / "resumes"
 
 APPLY_BUTTON_TEXT = [
+    "Continue to application", "Continue to apply", "Apply on employer site", "Apply on company website",
     "Apply now", "Easy Apply", "Apply on company site", "Apply for this job",
     "Apply to this job", "Start application", "Apply",
 ]
@@ -68,6 +72,31 @@ QUESTION_RULES = [
 EEO_RE = r"gender|\bsex\b|\brace\b|ethnicity|hispanic|latino|veteran|disabilit|pronoun|sexual orientation"
 DECLINE_RE = r"decline|prefer not|don'?t wish|do not wish|not to (say|disclose|answer|identify|self)|choose not"
 AGREE_RE = r"\bi agree|acknowledge|consent|i certify|i attest|privacy (policy|notice)|terms (of|and)"
+# Boxes that sign her up for marketing, texts, alerts or sharing with "partners". Pre-ticked
+# ones get unticked, and they're never ticked as an "I agree" box.
+MARKETING_RE = (r"(text|sms) (messages?|alerts?|updates|notifications)|receive (texts|calls|marketing|promotional)|"
+                r"marketing|promotional|newsletter|job alerts?|similar (jobs|positions|opportunities)|"
+                r"share (my|your) (profile|information|resume|data)|partners?|third[- ]part(y|ies)|"
+                r"talent (community|network|pool)|other (employers|opportunities|companies)|keep me (informed|updated|posted)|"
+                r"send me|sign me up|subscribe|auto-?dial")
+
+# Buttons that offer an account-free path past a login wall.
+GUEST_RE = re.compile(r"^\s*(apply|continue|proceed)( now)? (as (a )?guest|without (an |creating an )?account|"
+                      r"manually)\s*$|^\s*(skip( sign[- ]?in| this step)?|no thanks,? (i'?ll )?apply|guest)\s*$", re.I)
+# "Apply to these 10 similar jobs" style buttons: never click.
+BULK_APPLY_RE = re.compile(r"apply (to )?(all|these|similar|selected|\d+)|1-click apply|one-click apply|quick apply to|"
+                           r"easy apply to", re.I)
+CLOSED_RE = re.compile(
+    r"no longer (available|accepting|active|open)|(position|job|role) (has been |is )?(filled|closed)|"
+    r"(job|posting|listing|requisition) (has )?(expired|closed|been removed)|this job is not available|"
+    r"page (not found|doesn'?t exist)|we couldn'?t find (that|this) (job|page)", re.I)
+ALREADY_RE = re.compile(r"already (applied|submitted an application)|you('ve| have) applied (to|for) this", re.I)
+CODE_RE = re.compile(r"verification code|enter the code|one[- ]time (pass)?code|we (sent|texted|emailed) (you )?a code|"
+                     r"verify your (email|phone)", re.I)
+ASSESSMENT_RE = re.compile(r"\b(assessment|personality (test|questionnaire)|skills test|hirevue|video interview|"
+                           r"record (a|your) video|aptitude)\b", re.I)
+CHALLENGE_RE = re.compile(r"just a moment|checking (your|if the site connection is secure)|verify you are human|"
+                          r"attention required|are you a robot", re.I)
 
 OVERLAY_JS = r"""
 (() => {
@@ -123,6 +152,15 @@ const optionLabel = (el) => {
   const wrap = el.closest('label'); if (wrap) return textOf(wrap);
   return el.getAttribute('aria-label') || el.value || '';
 };
+// True when the field sits inside a newsletter / signup / job-alert box rather than the application.
+const inMarketingPopup = (el) => {
+  const box = el.closest('[role=dialog],[aria-modal=true],dialog,[class*=modal i],[class*=popup i],' +
+                         '[class*=newsletter i],[class*=subscribe i],[class*=signup i],[class*=alert i]');
+  if (!box) return false;
+  const t = (box.innerText || '').slice(0, 3000);
+  return /newsletter|subscribe|% off|discount|coupon|job alerts?|talent (community|network)|stay (connected|updated)/i.test(t) &&
+         !box.querySelector('input[type=file]') && !/upload (your )?(resume|cv)|first name|last name/i.test(t);
+};
 const groupQuestion = (el) => {
   const fs = el.closest('fieldset');
   if (fs) { const lg = fs.querySelector('legend'); if (lg) return textOf(lg).toLowerCase(); }
@@ -157,7 +195,7 @@ FILL_JS = "(rules) => {" + HELPERS_JS + r"""
   const fields = document.querySelectorAll(
     'input[type=text],input[type=email],input[type=tel],input[type=number],input[type=url],input:not([type]),textarea');
   for (const el of fields) {
-    if (el.value || el.disabled || el.readOnly || !visible(el)) continue;
+    if (el.value || el.disabled || el.readOnly || !visible(el) || inMarketingPopup(el)) continue;
     const d = describe(el);
     if (el.tagName === 'TEXTAREA' && !/address|linkedin|hear about|find us/.test(d)) continue;
     for (const [pattern, exclude, value] of rules) {
@@ -172,7 +210,7 @@ FILL_JS = "(rules) => {" + HELPERS_JS + r"""
 """
 
 # Answers yes/no style questions (selects, radio groups) and EEO / consent items.
-CHOICE_JS = "([rules, eeoRe, declineRe, eeoDecline, agreeRe, autoAgree]) => {" + HELPERS_JS + r"""
+CHOICE_JS = "([rules, eeoRe, declineRe, eeoDecline, agreeRe, autoAgree, marketingRe]) => {" + HELPERS_JS + r"""
   const pick = (q) => {
     if (eeoDecline && new RegExp(eeoRe).test(q)) return '__decline__';
     for (const [pattern, answer] of rules) if (answer && new RegExp(pattern).test(q)) return answer;
@@ -206,11 +244,17 @@ CHOICE_JS = "([rules, eeoRe, declineRe, eeoDecline, agreeRe, autoAgree]) => {" +
     const r = radios.find(x => matches(optionLabel(x), a));
     if (r) { r.click(); answered++; }
   }
-  if (autoAgree) {
-    for (const c of document.querySelectorAll('input[type=checkbox]')) {
-      if (c.checked || !visible(c)) continue;
-      if (new RegExp(agreeRe).test(optionLabel(c).toLowerCase() + ' ' + describe(c))) { c.click(); answered++; }
+  const marketing = new RegExp(marketingRe);
+  for (const c of document.querySelectorAll('input[type=checkbox]')) {
+    if (!visible(c)) continue;
+    const label = optionLabel(c).toLowerCase() + ' ' + describe(c);
+    const required = c.required || c.getAttribute('aria-required') === 'true';
+    if (marketing.test(label)) {
+      // Dark pattern: pre-ticked "send me texts / share with partners". Untick unless the form requires it.
+      if (c.checked && !required) { c.click(); answered++; }
+      continue;
     }
+    if (autoAgree && !c.checked && new RegExp(agreeRe).test(label)) { c.click(); answered++; }
   }
   return answered;
 }
@@ -240,6 +284,76 @@ MISSING_JS = "() => {" + HELPERS_JS + r"""
 """
 
 
+# Closes newsletter / cookie / "get job alerts" / app-download popups that cover the page.
+# Never touches a popup that holds the application itself (resume upload, name fields, "apply").
+DISMISS_JS = r"""
+() => {
+  const visible = (el) => !!(el.offsetParent || el.getClientRects().length) &&
+    getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+  const POPUP = /newsletter|subscribe|sign up for (our|email|texts)|get \d+\s*% off|% off your|discount|coupon|promo|cookie|privacy (preferences|choices|settings)|we use cookies|consent|notifications?|download (our|the) app|join (our|the) (mailing|email|talent)|job alerts?|stay (connected|updated|in touch)|talent (community|network)|similar jobs|don'?t miss|before you go|sign in to (save|see)|create an account to/i;
+  const APPLICATION = /upload (your )?(resume|cv)|attach (your )?(resume|cv)|first name|last name|submit (your )?application|work authorization|legally authorized/i;
+  const CLOSE = /^\s*(no,? thanks?|no thank you|not now|not interested|maybe later|close|dismiss|skip|×|✕|✖|x|reject all|reject|decline|decline all|only (strictly )?necessary|necessary (cookies )?only|continue without accepting|accept all( cookies)?|accept|allow all|got it|i understand|ok|okay|continue)\s*$/i;
+  const containers = new Set();
+  document.querySelectorAll('[role=dialog],[role=alertdialog],[aria-modal=true],dialog[open],' +
+    '[class*=modal i],[class*=popup i],[class*=overlay i],[class*=lightbox i],[class*=cookie i],[id*=cookie i],' +
+    '[class*=consent i],[id*=consent i],[id*=onetrust],[class*=newsletter i],[class*=banner i],[class*=interstitial i]')
+    .forEach(el => { if (visible(el)) containers.add(el); });
+  let closed = 0;
+  for (const box of containers) {
+    if (!document.contains(box) || !visible(box)) continue;
+    const text = (box.innerText || '').slice(0, 3000);
+    if (!POPUP.test(text)) continue;
+    if (box.querySelector('input[type=file]') || APPLICATION.test(text)) continue;
+    const buttons = [...box.querySelectorAll('button,a,[role=button],input[type=button],span[class*=close i],div[class*=close i]')]
+      .filter(visible);
+    // Prefer an explicit close/decline over "accept".
+    const score = (b) => {
+      const t = (b.innerText || b.value || '').trim();
+      const label = (b.getAttribute('aria-label') || b.getAttribute('title') || '').toLowerCase();
+      if (/close|dismiss|no thanks|not now/.test(label)) return 3;
+      if (/^(no|not|maybe|close|dismiss|skip|reject|decline|only|necessary|continue without|×|✕|✖|x)/i.test(t) && CLOSE.test(t)) return 2;
+      if (CLOSE.test(t)) return 1;
+      if (/close/i.test(b.className || '') && t.length <= 2) return 2;
+      return 0;
+    };
+    const best = buttons.map(b => [score(b), b]).filter(x => x[0] > 0).sort((a, b) => b[0] - a[0])[0];
+    if (best) { best[1].click(); closed++; continue; }
+    // No close button: hide it, and undo the scroll lock popups put on the page.
+    box.style.setProperty('display', 'none', 'important');
+    closed++;
+  }
+  // Chat bubbles sit on top of Next / Submit buttons.
+  document.querySelectorAll('#intercom-container,.intercom-lightweight-app,#hubspot-messages-iframe-container,' +
+    '#drift-widget,#drift-frame-controller,#launcher,.zEWidget-launcher,#ada-button-frame,' +
+    'iframe[title*="chat" i],[id*="chat-widget" i],[class*="chat-widget" i],[id*="livechat" i]')
+    .forEach(el => el.style.setProperty('display', 'none', 'important'));
+  if (closed) {
+    document.documentElement.style.overflow = '';
+    document.body.style.overflow = '';
+    document.body.classList.remove('modal-open', 'no-scroll', 'noscroll', 'overflow-hidden');
+  }
+  return closed;
+}
+"""
+
+
+def dismiss_popups(page) -> int:
+    """Close popups in every frame. Returns how many were closed."""
+    closed = 0
+    for _ in range(3):  # closing one popup sometimes reveals another
+        n = 0
+        for frame in _frames(page):
+            try:
+                n += frame.evaluate(DISMISS_JS)
+            except Exception:  # noqa: BLE001
+                continue
+        if not n:
+            break
+        closed += n
+        page.wait_for_timeout(600)
+    return closed
+
+
 def fill_rules(profile: dict) -> list[tuple[str, str, str]]:
     """(pattern, exclude pattern, value) for text fields. First match wins."""
     not_other = "company|employer|user|school|reference|manager|supervisor|contact|emergency|referr"
@@ -267,7 +381,7 @@ def choice_args(profile: dict) -> list:
     ans = profile.get("answers", {})
     rules = [(pat, ans.get(key, "")) for pat, key in QUESTION_RULES]
     return [rules, EEO_RE, DECLINE_RE, bool(profile.get("eeo_decline", True)),
-            AGREE_RE, bool(profile.get("auto_agree_terms", False))]
+            AGREE_RE, bool(profile.get("auto_agree_terms", False)), MARKETING_RE]
 
 
 def _frames(page):
@@ -314,32 +428,96 @@ def page_text(page) -> str:
     return "\n".join(chunks)
 
 
+def _visible_count(page, selector: str) -> int:
+    n = 0
+    for frame in _frames(page):
+        try:
+            n += frame.locator(selector).count()
+        except Exception:  # noqa: BLE001
+            continue
+    return n
+
+
 def blocker(page) -> str | None:
+    """Things only she can get past."""
     for frame in _frames(page):
         if CAPTCHA_RE.search(frame.url) and "invisible" not in frame.url:
             return "CAPTCHA on the page"
+    text = page_text(page)
+    if CHALLENGE_RE.search(text[:500]):
+        return "Site's bot check didn't clear"
+    if _visible_count(page, "input[type=password]:visible"):
+        return "Site wants a login or new account"
+    if CODE_RE.search(text) and _visible_count(page, "input:visible"):
+        return "Site wants a verification code sent to her email or phone"
+    if ASSESSMENT_RE.search(text) and not has_form(page):
+        return "Application needs an assessment or video interview"
+    return None
+
+
+def page_problem(page) -> tuple[str, str] | None:
+    """Page states that end the attempt: closed posting, already applied, asks for money."""
+    text = page_text(page)
+    if ALREADY_RE.search(text):
+        return "applied", "Site says she already applied"
+    if CLOSED_RE.search(text) and not has_form(page):
+        return "skipped", "Posting is closed or expired"
+    if _visible_count(page, "input[autocomplete^=cc-]:visible, input[name*=card i]:visible, "
+                            "input[id*=cardnumber i]:visible, input[placeholder*='card number' i]:visible"):
+        return "skipped", "Site asked for payment card details. Not applying (likely a scam)"
+    if re.search(r"(routing|bank account) number", text, re.I) and _visible_count(page, "input:visible"):
+        return "needs_review", "Asks for bank details. Check this company before going further"
+    if re.search(r"social security|\bssn\b", text, re.I) and _visible_count(
+            page, "input[name*=ssn i]:visible, input[id*=ssn i]:visible, input[name*=social i]:visible"):
+        return "needs_review", "Asks for her Social Security number. Check this company before going further"
     for frame in _frames(page):
         try:
-            if frame.locator("input[type=password]:visible").count():
-                return "Site wants a login or new account"
+            mail = frame.locator("a[href^='mailto:']").filter(has_text=re.compile(r"apply", re.I))
+            if mail.count() and not has_form(page):
+                return "needs_review", "Applications are by email: " + (mail.first.get_attribute("href") or "")[7:]
         except Exception:  # noqa: BLE001
             continue
     return None
 
 
 def has_form(page) -> bool:
+    return bool(_visible_count(
+        page, "input[type=email]:visible, input[type=file], input[type=tel]:visible, "
+              "input[name*=first i]:visible, input[autocomplete=given-name]:visible"))
+
+
+def _click_by_text(page, rx: re.Pattern, roles=("button", "link")) -> bool:
     for frame in _frames(page):
-        try:
-            if frame.locator("input[type=email]:visible, input[type=file], input[type=tel]:visible").count():
-                return True
-        except Exception:  # noqa: BLE001
-            continue
+        for role in roles:
+            try:
+                loc = frame.get_by_role(role, name=rx)
+                for i in range(loc.count()):
+                    el = loc.nth(i)
+                    if el.is_visible() and not BULK_APPLY_RE.search(el.inner_text() or ""):
+                        el.click(timeout=4000)
+                        return True
+            except Exception:  # noqa: BLE001
+                continue
     return False
 
 
-def find_action(page):
-    """Returns (locator, 'submit' | 'next') for the button that moves the form forward."""
-    for kind, rx in (("next", NEXT_RE), ("submit", SUBMIT_RE)):
+def try_guest(page) -> bool:
+    """Login wall with an 'apply as guest' way around it."""
+    if _click_by_text(page, GUEST_RE):
+        _settle(page)
+        return True
+    return False
+
+
+def find_action(page, allow_apply: bool = True):
+    """Returns (locator, 'submit' | 'next') for the button that moves the form forward.
+
+    Once she's submitted, "Apply" buttons are off limits: on a "you may also like" page
+    they apply her to other jobs.
+    """
+    submit_rx = SUBMIT_RE if allow_apply else re.compile(
+        r"^\s*(submit( my| your)?( application)?|send( my)? application|complete( my)? application|finish)\s*$", re.I)
+    for kind, rx in (("next", NEXT_RE), ("submit", submit_rx)):
         for frame in _frames(page):
             try:
                 for loc in (frame.get_by_role("button", name=rx), frame.locator("input[type=submit]")):
@@ -348,6 +526,9 @@ def find_action(page):
                         if not el.is_visible() or not el.is_enabled():
                             continue
                         if el.evaluate("e => e.tagName") == "INPUT" and not rx.match(el.get_attribute("value") or ""):
+                            continue
+                        label = (el.inner_text() or el.get_attribute("value") or "")
+                        if BULK_APPLY_RE.search(label) or re.search(r"\$|upgrade|premium|boost|pay\b", label, re.I):
                             continue
                         return el, kind
             except Exception:  # noqa: BLE001
@@ -360,8 +541,14 @@ def click_apply(page) -> bool:
         for role in ("button", "link"):
             loc = page.get_by_role(role, name=text, exact=False)
             try:
-                if loc.count() and loc.first.is_visible():
-                    loc.first.click(timeout=3000)
+                for i in range(min(loc.count(), 5)):
+                    el = loc.nth(i)
+                    label = el.inner_text() or ""
+                    # Not "Apply with LinkedIn/Indeed" (needs her login) or "Apply to 10 similar jobs".
+                    if not el.is_visible() or BULK_APPLY_RE.search(label) or re.search(
+                            r"with (linkedin|indeed|google|facebook|seek)|using (linkedin|indeed)", label, re.I):
+                        continue
+                    el.click(timeout=3000)
                     page.wait_for_load_state("domcontentloaded", timeout=15000)
                     return True
             except Exception:  # noqa: BLE001
@@ -370,11 +557,41 @@ def click_apply(page) -> bool:
 
 
 def _settle(page, ms: int = 2500) -> None:
+    """Wait for the page to finish loading AND stop redirecting (tracking links, delayed
+    JS redirects, "Checking your browser..." screens). Scrolls once so lazy-loaded
+    buttons appear."""
     try:
         page.wait_for_load_state("networkidle", timeout=8000)
     except Exception:  # noqa: BLE001
         pass
+    deadline = time.time() + 20
+    last, stable_since = page.url, time.time()
+    while time.time() < deadline:
+        page.wait_for_timeout(500)
+        try:
+            title = page.title()
+        except Exception:  # noqa: BLE001 - mid-navigation
+            continue
+        if page.url != last:
+            last, stable_since = page.url, time.time()
+        elif time.time() - stable_since >= 2 and not CHALLENGE_RE.search(title):
+            break
+    try:
+        page.evaluate("() => { window.scrollTo(0, document.body.scrollHeight); window.scrollTo(0, 0); }")
+    except Exception:  # noqa: BLE001
+        pass
     page.wait_for_timeout(ms)
+
+
+def _newest_page(ctx):
+    """The tab the site most recently opened, skipping blank ones."""
+    pages = [pg for pg in ctx.pages if pg.url not in ("about:blank", "")]
+    return pages[-1] if pages else ctx.pages[-1]
+
+
+def _domain(url: str) -> str:
+    from .scamcheck import registered_domain
+    return registered_domain(url)
 
 
 def auto_apply(ctx, job: dict, profile: dict, resume_path: str, dry_run: bool = False) -> tuple[str, str]:
@@ -382,22 +599,39 @@ def auto_apply(ctx, job: dict, profile: dict, resume_path: str, dry_run: bool = 
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
     page.goto(job["url"], wait_until="domcontentloaded", timeout=45000)
     _settle(page)
+    dismiss_popups(page)
+    domains = {_domain(page.url)}
 
-    # Job boards often take two hops (board -> company site -> form).
-    for _ in range(2):
-        target = ctx.pages[-1]
+    # Job boards often take a few hops (board -> aggregator -> company site -> form).
+    for _ in range(3):
+        target = _newest_page(ctx)
+        dismiss_popups(target)
+        problem = page_problem(target)
+        if problem:
+            return problem
         if has_form(target) or CONFIRM_RE.search(page_text(target)):
             break
+        if _visible_count(target, "input[type=password]:visible") and try_guest(target):
+            continue
         if not click_apply(target):
             break
-        _settle(ctx.pages[-1])
+        _settle(_newest_page(ctx))
+        domains.add(_domain(_newest_page(ctx).url))
+        if len(domains) > 4:
+            return "needs_review", "Bounced through several job sites without reaching an application"
 
     clicked_submit = False
     for _ in range(10):
-        target = ctx.pages[-1]
+        target = _newest_page(ctx)
         if CONFIRM_RE.search(page_text(target)):
             return "applied", "Confirmation page seen"
+        dismiss_popups(target)
+        problem = page_problem(target)
+        if problem:
+            return problem
         reason = blocker(target)
+        if reason == "Site wants a login or new account" and try_guest(target):
+            continue
         if reason:
             return "needs_review", reason
         if not has_form(target) and not clicked_submit:
@@ -407,7 +641,7 @@ def auto_apply(ctx, job: dict, profile: dict, resume_path: str, dry_run: bool = 
         missing = missing_required(target)
         if missing:
             return "needs_review", "Unanswered: " + "; ".join(missing[:3])
-        button, kind = find_action(target)
+        button, kind = find_action(target, allow_apply=not clicked_submit)
         if not button:
             note = "No Submit button found"
             return "needs_review", note + (" (it may have gone through; check)" if clicked_submit else "")
@@ -415,13 +649,91 @@ def auto_apply(ctx, job: dict, profile: dict, resume_path: str, dry_run: bool = 
             return "needs_review", "Test run: form filled, ready to submit"
         button.click(timeout=5000)
         clicked_submit = clicked_submit or kind == "submit"
-        _settle(ctx.pages[-1], 3000)
-        text = page_text(ctx.pages[-1])
+        _settle(_newest_page(ctx), 3000)
+        text = page_text(_newest_page(ctx))
         if CONFIRM_RE.search(text):
             return "applied", "Confirmation page seen"
-        if kind == "submit" and ERROR_RE.search(text) and missing_required(ctx.pages[-1]):
+        if kind == "submit" and ERROR_RE.search(text) and missing_required(_newest_page(ctx)):
             return "needs_review", "Form showed an error after Submit"
     return "needs_review", "Submitted but no confirmation seen; check your email"
+
+
+# ---------------------------------------------------------------- one run at a time
+
+def pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        # os.kill(pid, 0) would TERMINATE the process on Windows, so ask the OS instead.
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def running_pid() -> int | None:
+    """PID of a run that's still going, or None (stale lock files are ignored)."""
+    try:
+        pid = int(LOCK_FILE.read_text().split()[0])
+    except Exception:  # noqa: BLE001
+        return None
+    return pid if pid != os.getpid() and pid_alive(pid) else None
+
+
+def request_stop() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    STOP_FILE.write_text("stop")
+
+
+def stop_requested() -> bool:
+    return STOP_FILE.exists()
+
+
+def _sleep(seconds: float) -> bool:
+    """Sleep, waking early if Stop was pressed. Returns False if stopped."""
+    end = time.time() + seconds
+    while time.time() < end:
+        if stop_requested():
+            return False
+        time.sleep(0.5)
+    return True
+
+
+def launch_browser(p, headless: bool):
+    """Open the browser with her saved logins. If that profile is still locked by a leftover
+    browser window, fall back to a fresh one so the run isn't lost."""
+    BROWSER_PROFILE.mkdir(parents=True, exist_ok=True)
+    kwargs = dict(headless=headless, no_viewport=True, args=BROWSER_ARGS, accept_downloads=False,
+                  executable_path=os.environ.get("CHROMIUM_PATH") or None)
+    try:
+        return p.chromium.launch_persistent_context(str(BROWSER_PROFILE), **kwargs)
+    except Exception as e:  # noqa: BLE001
+        if not re.search(r"existing browser session|already in use|SingletonLock|lock", str(e), re.I):
+            raise
+        import tempfile
+        print("The assistant's browser from an earlier run still seems to be open, so this run uses a "
+              "fresh browser. Saved logins won't be available this time. Close any leftover "
+              "'Chrome for Testing' windows to get them back.", flush=True)
+        return p.chromium.launch_persistent_context(tempfile.mkdtemp(prefix="jobapp-browser-"), **kwargs)
+
+
+def _on_dialog(dialog) -> None:
+    """alert / confirm / "Leave site?" boxes would otherwise freeze the run."""
+    try:
+        dialog.accept()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def resume_for(job: dict, profile: dict, base_text: str) -> str:
@@ -490,12 +802,28 @@ def run(limit: int | None = None, job_ids: list[str] | None = None, mode: str = 
 
     state = {"decision": None, "fill": False, "info": ""}
 
+    other = running_pid()
+    if other:
+        print(f"Already applying in another window (process {other}). Wait for it to finish or press Stop.")
+        return
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    LOCK_FILE.write_text(str(os.getpid()))
+    STOP_FILE.unlink(missing_ok=True)
+    try:
+        _run_jobs(sync_playwright, jobs, tracker, profile, base_text, state, mode, headless, dry_run, pause)
+    finally:
+        LOCK_FILE.unlink(missing_ok=True)
+        STOP_FILE.unlink(missing_ok=True)
+    print("Done.")
+
+
+def _run_jobs(sync_playwright, jobs, tracker, profile, base_text, state, mode, headless, dry_run, pause) -> None:
     with sync_playwright() as p:
-        BROWSER_PROFILE.mkdir(parents=True, exist_ok=True)
         # A persistent profile keeps her logged in to Indeed / Workday / etc. between runs.
-        ctx = p.chromium.launch_persistent_context(
-            str(BROWSER_PROFILE), headless=headless and mode == "auto", no_viewport=True,
-            executable_path=os.environ.get("CHROMIUM_PATH") or None)
+        ctx = launch_browser(p, headless=headless and mode == "auto")
+        ctx.on("page", lambda pg: pg.on("dialog", _on_dialog))
+        for pg in ctx.pages:
+            pg.on("dialog", _on_dialog)
         ctx.expose_binding("jobappDecide", lambda source, v: state.update(decision=v))
         ctx.expose_binding("jobappFill", lambda source: state.update(fill=source["page"]))
         ctx.expose_binding("jobappInfo", lambda source: state["info"] if mode == "review" else "")
@@ -504,6 +832,9 @@ def run(limit: int | None = None, job_ids: list[str] | None = None, mode: str = 
             ctx.new_page()
 
         for n, job in enumerate(jobs, 1):
+            if stop_requested():
+                print("Stopped.", flush=True)
+                break
             label = f"[{n}/{len(jobs)}] {job['title']} - {job['company']}"
             state.update(decision=None, fill=False, info=label)
             print(label, flush=True)
@@ -529,26 +860,34 @@ def run(limit: int | None = None, job_ids: list[str] | None = None, mode: str = 
                 print(f"  -> {result}: {note}", flush=True)
                 for extra in ctx.pages[1:]:
                     extra.close()
-                if n < len(jobs):
-                    time.sleep(random.uniform(*pause))  # don't hammer sites; looks less like a bot
+                if n < len(jobs) and not _sleep(random.uniform(*pause)):  # don't hammer sites
+                    print("Stopped.", flush=True)
+                    break
                 continue
 
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             try:
                 page.goto(job["url"], wait_until="domcontentloaded", timeout=45000)
+                page.wait_for_timeout(1500)
+                dismiss_popups(page)
                 click_apply(page)
                 page.wait_for_timeout(1500)
+                dismiss_popups(ctx.pages[-1])
                 autofill(ctx.pages[-1], profile, resume_path)
             except Exception as e:  # noqa: BLE001
                 print(f"  couldn't load: {e}")
 
             while state["decision"] is None:
+                if stop_requested():
+                    state["decision"] = "stop"
+                    break
                 if not ctx.pages:
                     state["decision"] = "stop"
                     break
                 if state["fill"]:
                     target, state["fill"] = state["fill"], False
                     try:
+                        dismiss_popups(target)
                         print(f"  filled {autofill(target, profile, resume_path)} fields")
                     except Exception as e:  # noqa: BLE001
                         print(f"  fill failed: {e}")
@@ -565,7 +904,6 @@ def run(limit: int | None = None, job_ids: list[str] | None = None, mode: str = 
             ctx.close()
         except Exception:  # noqa: BLE001
             pass
-    print("Done.")
 
 
 def main() -> None:

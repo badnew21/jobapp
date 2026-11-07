@@ -239,3 +239,22 @@ def test_remote_nationwide_search(monkeypatch):
     assert warnings == []
     assert [j.company for j in jobs] == ["A"]                       # only the remote one
     assert calls and all(c["location"] is None and c["is_remote"] for c in calls)   # nationwide
+
+
+def test_single_run_lock(tmp_path, monkeypatch):
+    import os
+
+    import jobapp.apply_assist as A
+
+    monkeypatch.setattr(A, "LOCK_FILE", tmp_path / "apply.lock")
+    monkeypatch.setattr(A, "STOP_FILE", tmp_path / "apply.stop")
+    monkeypatch.setattr(A, "DATA_DIR", tmp_path)
+    assert A.running_pid() is None                       # no lock file
+    A.LOCK_FILE.write_text("999999")                     # stale: that process is gone
+    assert A.running_pid() is None
+    parent = os.getppid()                                # a process that's definitely alive
+    A.LOCK_FILE.write_text(str(parent))
+    assert A.running_pid() == parent
+    assert not A.stop_requested()
+    A.request_stop()
+    assert A.stop_requested() and A._sleep(5) is False   # wakes up right away when Stop is pressed
