@@ -7,6 +7,16 @@ A small app that runs on your own computer. It does four things:
 3. **Makes a resume for every job.** Before each application, it writes a fresh copy of your resume. The skills that posting asks for go at the top of the Skills section and into the summary, and the summary names that job title. Files are named like `Jane Doe Resume - Walmart.pdf`.
 4. **Applies automatically.** For each queued job it opens the posting, clicks Apply, fills in your details, answers the screening questions you set up, attaches that job's resume, clicks through Next / Submit, and checks for a "thank you for applying" page.
 
+## Filtering out jobs she isn't qualified for
+
+Fill in **Qualifications** on tab 1: highest education, total years of work experience, and the licenses or certifications she currently holds. Each search result then gets a fit rating:
+
+- ✅ **Good fit:** nothing in the posting rules her out.
+- 🟨 **Stretch:** something is "preferred", it's a manager title above shift level, it asks for a short certification like CPR, or it asks for 1–2 years in an area that isn't on her resume. Worth applying.
+- ⛔ **Not qualified:** it *requires* a degree above hers, a license she doesn't hold (RN, CDL, CNA and so on), 3+ years in an area that isn't on her resume, more years than she has in total, or it's a senior or director role.
+
+⛔ jobs are hidden by default (untick "Hide jobs she isn't qualified for" to see them), and "Select all" leaves them out. "Why N jobs are a stretch or not a fit" under the results gives the reason for each one.
+
 ## Scam check
 
 Every job gets a safety rating in the search results: 🟢 Looks OK, 🟡 Check first, or 🔴 Possible scam.

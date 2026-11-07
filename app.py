@@ -19,6 +19,7 @@ from jobapp.resume import (docx_to_text, existing_skills, pdf_to_text, read_resu
                            tailor_for_job)
 import os
 
+from jobapp.qualify import COMMON_CREDENTIALS, EDUCATION_LEVELS, check_fit, fit_label
 from jobapp.scamcheck import assess, risk_label
 from jobapp.search import SOURCES, SearchOptions, search_jobs
 from jobapp.tracker import STATUSES, Tracker
@@ -58,6 +59,25 @@ with tab_profile:
             save_profile(new_profile)
             st.success("Saved.")
             profile = load_profile()
+
+    st.subheader("Qualifications")
+    st.caption("Used to hide jobs she can't get: ones that require a degree, license or more experience "
+               "than she has.")
+    with st.form("quals"):
+        c1, c2 = st.columns(2)
+        edu_opts = ["(not set)"] + EDUCATION_LEVELS
+        cur = profile.get("education") or "(not set)"
+        education = c1.selectbox("Highest education", edu_opts, index=edu_opts.index(cur) if cur in edu_opts else 0)
+        work_years = c2.number_input("Total years of work experience", 0, 60,
+                                     int(profile.get("work_years") or 0))
+        held = [c for c in profile.get("credentials", []) if c in COMMON_CREDENTIALS]
+        creds = st.multiselect("Licenses and certifications she currently holds (leave out expired ones)",
+                               COMMON_CREDENTIALS, default=held)
+        if st.form_submit_button("Save qualifications"):
+            profile.update(education="" if education == "(not set)" else education, credentials=creds,
+                           work_years=int(work_years) or None)
+            save_profile(profile)
+            st.success("Saved.")
 
     st.subheader("Screening question answers")
     st.caption("The auto-submitter uses these to answer the usual questions. Answer them truthfully: "
@@ -162,31 +182,47 @@ with tab_search:
         for j in results:
             risks[j["id"]] = tracker.research(j["id"]) or assess(j).to_dict()
         labels = {k: risk_label(r["level"]) for k, r in risks.items()}
+        quals = {"education": profile.get("education") or "High school / GED",
+                 "credentials": profile.get("credentials", []), "years": profile.get("work_years")}
+        fits = {j["id"]: check_fit(j, quals, rt) for j in results}
+        hide = st.checkbox("Hide jobs she isn't qualified for", value=True)
+        not_q = [j for j in results if fits[j["id"]].level == "no"]
+        if not profile.get("education"):
+            st.info("Tip: fill in *Qualifications* in tab 1 so jobs that need a degree are filtered properly.")
+        shown = [j for j in results if not (hide and fits[j["id"]].level == "no")]
+        if hide and not_q:
+            st.caption(f"Hiding {len(not_q)} jobs that need a degree, license or experience she doesn't have.")
         rows = []
-        for j in results:
+        for j in shown:
             status = tracker.status_of(j["id"]) or "new"
             score = analyze(rt, [j["description"]], st.session_state.get("industry", "Any")).score if rt else None
             rows.append({
                 "queue": status == "queued",
-                "title": j["title"], "company": j["company"], "safety": labels[j["id"]],
+                "title": j["title"], "company": j["company"], "fit": fits[j["id"]].label,
+                "safety": labels[j["id"]],
                 "location": j["location"], "type": j["job_type"].replace("_", " "), "remote": j["remote"], "pay": j["salary"],
                 "match %": score, "status": status, "posted": j["posted"], "link": j["url"], "id": j["id"],
             })
         st.caption("Tick the jobs you want to apply to, then press *Queue selected*. "
                    "“match %” is how many of the posting's keywords your resume already has.")
         c1, c2 = st.columns(2)
-        select_all = c1.checkbox("Select all new jobs (except possible scams)")
+        select_all = c1.checkbox("Select all new jobs (except possible scams and jobs she doesn't qualify for)")
         if select_all:
             for r in rows:
-                if r["status"] == "new" and risks[r["id"]]["level"] != "high":
+                if r["status"] == "new" and risks[r["id"]]["level"] != "high" and fits[r["id"]].level != "no":
                     r["queue"] = True
-        edited = st.data_editor(
-            rows, hide_index=True, width="stretch", disabled=[k for k in rows[0] if k != "queue"],
-            column_config={"link": st.column_config.LinkColumn("link", display_text="open"),
-                           "id": None,
-                           "match %": st.column_config.ProgressColumn("match %", min_value=0, max_value=100)},
-            key="results_editor",
-        )
+        edited: list[dict] = []
+        if not rows:
+            st.info("Every job in these results needs something she doesn't have. Try another industry "
+                    "or untick *Hide jobs she isn't qualified for* to see them.")
+        else:
+            edited = st.data_editor(
+                rows, hide_index=True, width="stretch", disabled=[k for k in rows[0] if k != "queue"],
+                column_config={"link": st.column_config.LinkColumn("link", display_text="open"),
+                               "id": None,
+                               "match %": st.column_config.ProgressColumn("match %", min_value=0, max_value=100)},
+                key="results_editor",
+            )
         if c2.button("➕ Queue selected"):
             n = 0
             for r in edited:
@@ -196,6 +232,13 @@ with tab_search:
             st.success(f"Queued {n} jobs. Go to the Apply tab.")
             st.rerun()
 
+        stretch = [j for j in results if fits[j["id"]].level != "good"]
+        if stretch:
+            with st.expander(f"Why {len(stretch)} jobs are a stretch or not a fit"):
+                for j in sorted(stretch, key=lambda x: fits[x["id"]].level != "no"):
+                    f = fits[j["id"]]
+                    st.markdown(f"**{f.label} · {j['title']} — {j['company'] or '(no company)'}**  \n"
+                                + "; ".join(f.reasons))
         flagged = [j for j in results if risks[j["id"]]["level"] != "low"]
         if flagged:
             with st.expander(f"Why {len(flagged)} jobs are flagged"):

@@ -47,6 +47,7 @@ def load_profile() -> dict:
         "resume_path": "", "tailored_resume_path": "", "skill_bank": [], "resume_format": "pdf",
         "answers": dict(ANSWER_DEFAULTS), "eeo_decline": True, "auto_agree_terms": False,
         "skip_risky": True, "hold_check": False,
+        "education": "", "credentials": [], "work_years": None,
     }
     if PROFILE_PATH.exists():
         base.update(json.loads(PROFILE_PATH.read_text()))
