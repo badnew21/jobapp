@@ -144,15 +144,27 @@ def resume_text() -> str:
 # ------------------------------------------------------------------ search
 with tab_search:
     st.subheader("What are you looking for?")
+    where = st.radio("Where", ["Near me", "Remote (anywhere in the US)"], horizontal=True)
+    remote_mode = where.startswith("Remote")
     c1, c2, c3 = st.columns([2, 1, 3])
-    location = c1.text_input("City or ZIP code", value=profile.get("zip") or profile.get("city_state", ""))
-    radius = c2.slider("Radius (miles)", 1, 100, 25)
-    industries = c3.multiselect("Industries", [i for i in INDUSTRIES if i != "Any"],
-                                default=["Fast food / Restaurant", "Grocery", "Retail"],
+    if remote_mode:
+        location, radius = "", 0
+        c1.text_input("City or ZIP code", value="Anywhere in the US", disabled=True)
+        c2.caption("No distance limit: work-from-home jobs only.")
+        default_inds = ["Customer service / Call center", "Office / Administrative"]
+    else:
+        location = c1.text_input("City or ZIP code", value=profile.get("zip") or profile.get("city_state", ""))
+        radius = c2.slider("Radius (miles)", 1, 100, 25)
+        default_inds = ["Fast food / Restaurant", "Grocery", "Retail"]
+    # A separate key per mode, so switching modes switches the default industries too.
+    industries = c3.multiselect("Industries", [i for i in INDUSTRIES if i != "Any"], default=default_inds,
+                                key=f"industries_{'remote' if remote_mode else 'local'}",
                                 help="Pick several. Leave empty to search all jobs.")
     c4, c5, c6 = st.columns([2, 2, 1])
-    job_types = c4.multiselect("Job type", JOB_TYPES, default=[],
+    job_types = c4.multiselect("Job type", [t for t in JOB_TYPES if t != "Remote" or not remote_mode], default=[],
                                help="Leave empty for any. Postings that don't say are always kept.")
+    if remote_mode:
+        job_types = job_types + ["Remote"]
     extra = c5.text_input("Extra searches (optional, comma separated)",
                           placeholder="e.g. dollar store, deli, dishwasher")
     max_days = c6.number_input("Posted within (days)", 1, 90, 30)
@@ -193,47 +205,51 @@ with tab_search:
                                  industries=industries, extra_keywords=extra, max_days_old=int(max_days),
                                  sources=sources))
 
-    with st.expander("🗺️ Employers near you (stores and restaurants that may not post on job sites)"):
-        st.write("Lots of local hiring never reaches job sites: Publix only takes applications on its own "
-                 "site, many franchise restaurants use their own hiring pages, and small places just put a "
-                 "sign in the window. This lists the real businesses within your radius, from OpenStreetMap, "
-                 "with links to each one's jobs.")
-        if st.button("Find employers near me", disabled=not location):
-            try:
-                with st.spinner("Looking up businesses on the map..."):
-                    st.session_state["employers"] = [e.to_dict() for e in find_employers(location, radius)]
-                    st.session_state["employers_for"] = (location, radius)
-            except Exception as e:  # noqa: BLE001
-                st.error(f"Couldn't load the map data: {e}")
-        emps = st.session_state.get("employers", [])
-        if emps:
-            place, rad = st.session_state["employers_for"]
-            cats = st.multiselect("Show", ["Fast food / Restaurant", "Grocery", "Retail"],
-                                  default=["Fast food / Restaurant", "Grocery", "Retail"], key="emp_cats")
-            rows = []
-            for e in emps:
-                if e["category"] not in cats:
-                    continue
-                links = job_links(e["name"], place, rad)
-                rows.append({"search": False, "employer": e["name"], "type": e["category"],
-                             "locations": e["locations"], "address": e["address"] if e["locations"] == 1 else "",
-                             "google jobs": links["Google jobs"], "indeed": links["Indeed"],
-                             "careers page": links["Careers page"]})
-            st.caption(f"{len(rows)} employers within {rad} miles of {place}. The links open each one's job "
-                       "listings in your browser. Tick employers and press the button below to pull their "
-                       "job-site postings into your results.")
-            picked_rows = st.data_editor(
-                rows, hide_index=True, width="stretch", key="emp_editor",
-                disabled=[k for k in (rows[0] if rows else {}) if k != "search"],
-                column_config={k: st.column_config.LinkColumn(k, display_text="open")
-                               for k in ("google jobs", "indeed", "careers page")},
-            )
-            names = [r["employer"] for r in picked_rows if r["search"]]
-            if st.button(f"🔎 Search job sites for {len(names)} ticked employers", disabled=not names):
-                run_search(SearchOptions(location=location, radius_miles=radius, job_types=job_types,
-                                         industries=["Any"], extra_keywords=", ".join(names[:40]),
-                                         max_days_old=int(max_days), sources=sources, per_query=25),
-                           merge=True)
+    if remote_mode:
+        st.caption("Remote jobs attract a lot of scams. Watch the safety column, and remember that a real "
+                   "employer never asks you to pay for equipment or training, or to deposit a check for them.")
+    if not remote_mode:  # a map of nearby stores means nothing for remote work
+        with st.expander("🗺️ Employers near you (stores and restaurants that may not post on job sites)"):
+            st.write("Lots of local hiring never reaches job sites: Publix only takes applications on its own "
+                     "site, many franchise restaurants use their own hiring pages, and small places just put a "
+                     "sign in the window. This lists the real businesses within your radius, from OpenStreetMap, "
+                     "with links to each one's jobs.")
+            if st.button("Find employers near me", disabled=not location):
+                try:
+                    with st.spinner("Looking up businesses on the map..."):
+                        st.session_state["employers"] = [e.to_dict() for e in find_employers(location, radius)]
+                        st.session_state["employers_for"] = (location, radius)
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"Couldn't load the map data: {e}")
+            emps = st.session_state.get("employers", [])
+            if emps:
+                place, rad = st.session_state["employers_for"]
+                cats = st.multiselect("Show", ["Fast food / Restaurant", "Grocery", "Retail"],
+                                      default=["Fast food / Restaurant", "Grocery", "Retail"], key="emp_cats")
+                rows = []
+                for e in emps:
+                    if e["category"] not in cats:
+                        continue
+                    links = job_links(e["name"], place, rad)
+                    rows.append({"search": False, "employer": e["name"], "type": e["category"],
+                                 "locations": e["locations"], "address": e["address"] if e["locations"] == 1 else "",
+                                 "google jobs": links["Google jobs"], "indeed": links["Indeed"],
+                                 "careers page": links["Careers page"]})
+                st.caption(f"{len(rows)} employers within {rad} miles of {place}. The links open each one's job "
+                           "listings in your browser. Tick employers and press the button below to pull their "
+                           "job-site postings into your results.")
+                picked_rows = st.data_editor(
+                    rows, hide_index=True, width="stretch", key="emp_editor",
+                    disabled=[k for k in (rows[0] if rows else {}) if k != "search"],
+                    column_config={k: st.column_config.LinkColumn(k, display_text="open")
+                                   for k in ("google jobs", "indeed", "careers page")},
+                )
+                names = [r["employer"] for r in picked_rows if r["search"]]
+                if st.button(f"🔎 Search job sites for {len(names)} ticked employers", disabled=not names):
+                    run_search(SearchOptions(location=location, radius_miles=radius, job_types=job_types,
+                                             industries=["Any"], extra_keywords=", ".join(names[:40]),
+                                             max_days_old=int(max_days), sources=sources, per_query=25),
+                               merge=True)
 
     results = st.session_state.get("results", [])
     if results:

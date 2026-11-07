@@ -90,6 +90,10 @@ Pick the sites under "Job sites to search". None of them need a sign-up, except 
 
 Job sites only show employers that post there. Publix only takes applications on its own site, many franchise restaurants use their own hiring pages, and small local places just put a sign in the window. Open **🗺️ Employers near you** on the search tab and press **Find employers near me**. It lists the restaurants, grocery stores and shops within your radius, using OpenStreetMap (free, no key), with links to each one's jobs on Google and Indeed and to its careers page. Tick some and press the search button to pull their job-site postings into your results.
 
+### Remote jobs anywhere in the US
+
+Switch **Where** at the top of the search tab to **Remote (anywhere in the US)**. The location and radius go away, and only work-from-home jobs come back, from anywhere in the country. The industries switch to customer service and office work, which is where most entry-level remote jobs are. Remote listings attract a lot of scams, so keep an eye on the safety column. Some remote jobs only hire in certain states, which the posting usually says.
+
 ### Search tips
 
 - Pick several industries at once. Fast food, grocery and retail are selected by default.

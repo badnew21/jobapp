@@ -212,3 +212,30 @@ def test_untagged_part_time_jobs_are_kept():
     full = Job(id="f", source="x", title="Cashier", company="c", location="l", description="", url="",
                job_type="full_time")
     assert matches_job_type(untagged, ["Part time"]) and not matches_job_type(full, ["Part time"])
+
+
+def test_remote_nationwide_search(monkeypatch):
+    import pandas as pd
+
+    import jobapp.search as S
+
+    calls = []
+
+    def fake_scrape(**kw):
+        calls.append(kw)
+        return pd.DataFrame([
+            {"site": "indeed", "id": "r1", "job_url": "u1", "title": "Customer Service Representative",
+             "company": "A", "is_remote": True, "description": "Answer customer calls from home."},
+            {"site": "indeed", "id": "r2", "job_url": "u2", "title": "Customer Service Representative",
+             "company": "B", "is_remote": False, "description": "In our Tampa office."},
+        ])
+
+    real = S.search_jobspy
+    monkeypatch.setattr(S, "search_jobspy", lambda o, sites: real(o, sites, scrape=fake_scrape))
+    # Remote picked, Remotive not picked: this used to crash with a NameError.
+    opts = SearchOptions(location="", radius_miles=0, job_types=["Remote"],
+                         industries=["Customer service / Call center"], sources=["Indeed"])
+    jobs, warnings = S.search_jobs(opts)
+    assert warnings == []
+    assert [j.company for j in jobs] == ["A"]                       # only the remote one
+    assert calls and all(c["location"] is None and c["is_remote"] for c in calls)   # nationwide

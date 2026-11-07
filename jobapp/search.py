@@ -368,7 +368,7 @@ def search_jobs(opts: SearchOptions) -> tuple[list[Job], list[str]]:
         except Exception as e:  # noqa: BLE001
             warnings.append(f"Adzuna: {e}")
 
-    if "Remotive" in opts.sources or ("Remote" in opts.job_types and not sites):
+    if "Remotive" in opts.sources or ("Remote" in opts.job_types and not picked):
         try:
             jobs += search_remotive(opts)
         except Exception as e:  # noqa: BLE001
