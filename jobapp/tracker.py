@@ -28,7 +28,25 @@ class Tracker:
                 notes TEXT NOT NULL DEFAULT ''
             )"""
         )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS research (
+                job_id TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
+                checked_at TEXT NOT NULL
+            )"""
+        )
         self.conn.commit()
+
+    def save_research(self, job_id: str, data: dict) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO research (job_id, data, checked_at) VALUES (?,?,?)",
+            (job_id, json.dumps(data), datetime.now().isoformat(timespec="seconds")),
+        )
+        self.conn.commit()
+
+    def research(self, job_id: str) -> dict | None:
+        row = self.conn.execute("SELECT data FROM research WHERE job_id=?", (job_id,)).fetchone()
+        return json.loads(row["data"]) if row else None
 
     def add_jobs(self, jobs: list[Job]) -> int:
         now = datetime.now().isoformat(timespec="seconds")

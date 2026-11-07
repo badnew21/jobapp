@@ -40,6 +40,8 @@ class Job:
     salary: str = ""
     posted: str = ""
     tags: list[str] = field(default_factory=list)
+    company_url: str = ""       # employer's own website, when the source gives it
+    emails: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -233,6 +235,8 @@ def parse_jobspy(row: dict) -> Job:
         remote=bool(remote) if _clean(remote) != "" else bool(REMOTE_PATTERN.search(f"{title} {desc}")),
         salary=_jobspy_salary(row),
         posted=_clean(row.get("date_posted"))[:10],
+        company_url=_clean(row.get("company_url_direct")),
+        emails=[e.strip() for e in _clean(row.get("emails")).split(",") if e.strip()],
     )
 
 

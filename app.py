@@ -19,6 +19,7 @@ from jobapp.resume import (docx_to_text, existing_skills, pdf_to_text, read_resu
                            tailor_for_job)
 import os
 
+from jobapp.scamcheck import assess, risk_label
 from jobapp.search import SOURCES, SearchOptions, search_jobs
 from jobapp.tracker import STATUSES, Tracker
 
@@ -147,26 +148,40 @@ with tab_search:
     results = st.session_state.get("results", [])
     if results:
         rt = resume_text()
+        if st.button("🛡️ Research these companies (scam check)",
+                     help="Looks up each company's website and how old it is. Takes a few seconds per company."):
+            bar = st.progress(0.0, text="Checking companies...")
+            cache: dict = {}
+            for i, j in enumerate(results):
+                tracker.save_research(j["id"], assess(j, online=True, cache=cache).to_dict())
+                bar.progress((i + 1) / len(results), text=f"Checked {j['company'] or j['title']}")
+            bar.empty()
+            st.success("Done. See the safety column, and the list below the table.")
+
+        risks: dict[str, dict] = {}
+        for j in results:
+            risks[j["id"]] = tracker.research(j["id"]) or assess(j).to_dict()
+        labels = {k: risk_label(r["level"]) for k, r in risks.items()}
         rows = []
         for j in results:
             status = tracker.status_of(j["id"]) or "new"
             score = analyze(rt, [j["description"]], st.session_state.get("industry", "Any")).score if rt else None
             rows.append({
                 "queue": status == "queued",
-                "title": j["title"], "company": j["company"], "location": j["location"],
-                "type": j["job_type"].replace("_", " "), "remote": j["remote"], "pay": j["salary"],
+                "title": j["title"], "company": j["company"], "safety": labels[j["id"]],
+                "location": j["location"], "type": j["job_type"].replace("_", " "), "remote": j["remote"], "pay": j["salary"],
                 "match %": score, "status": status, "posted": j["posted"], "link": j["url"], "id": j["id"],
             })
         st.caption("Tick the jobs you want to apply to, then press *Queue selected*. "
                    "“match %” is how many of the posting's keywords your resume already has.")
         c1, c2 = st.columns(2)
-        select_all = c1.checkbox("Select all new jobs")
+        select_all = c1.checkbox("Select all new jobs (except possible scams)")
         if select_all:
             for r in rows:
-                if r["status"] == "new":
+                if r["status"] == "new" and risks[r["id"]]["level"] != "high":
                     r["queue"] = True
         edited = st.data_editor(
-            rows, hide_index=True, use_container_width=True, disabled=[k for k in rows[0] if k != "queue"],
+            rows, hide_index=True, width="stretch", disabled=[k for k in rows[0] if k != "queue"],
             column_config={"link": st.column_config.LinkColumn("link", display_text="open"),
                            "id": None,
                            "match %": st.column_config.ProgressColumn("match %", min_value=0, max_value=100)},
@@ -180,6 +195,19 @@ with tab_search:
                     n += 1
             st.success(f"Queued {n} jobs. Go to the Apply tab.")
             st.rerun()
+
+        flagged = [j for j in results if risks[j["id"]]["level"] != "low"]
+        if flagged:
+            with st.expander(f"Why {len(flagged)} jobs are flagged"):
+                for j in sorted(flagged, key=lambda x: risks[x["id"]]["level"] != "high"):
+                    r = risks[j["id"]]
+                    st.markdown(f"**{labels[j['id']]} · {j['title']} — {j['company'] or '(no company)'}**")
+                    for reason in r["reasons"]:
+                        st.markdown(f"- {reason}")
+                    st.markdown(" · ".join(f"[{name}]({url})" for name, url in r["links"].items()))
+        st.caption("The scam check reads each posting for warning signs. *Research these companies* also "
+                   "checks the company's website. A green result isn't a guarantee: never pay to get a job, "
+                   "and never give your SSN or bank details before a real interview.")
 
 # ------------------------------------------------------------------ resume tailoring
 with tab_resume:
@@ -262,7 +290,7 @@ with tab_apply:
     st.subheader(f"{len(queued)} jobs queued")
     if queued:
         st.dataframe([{"title": j["title"], "company": j["company"], "location": j["location"]}
-                      for j in queued], hide_index=True, use_container_width=True)
+                      for j in queued], hide_index=True, width="stretch")
 
     mode = st.radio("How should it apply?",
                     ["Automatically (it presses Submit)", "Review each one (you press Submit)"])
@@ -281,10 +309,18 @@ with tab_apply:
         cap = c3.number_input("Daily limit", 1, 200, 40,
                               help="Most job sites flag accounts that send hundreds a day.")
         limit = st.number_input("Jobs this run", 1, 500, max(1, min(len(queued), 40)))
+        c1, c2 = st.columns(2)
+        skip_risky = c1.checkbox("Skip possible scams (🔴)", value=profile.get("skip_risky", True))
+        hold_check = c2.checkbox("Hold 🟡 \"check first\" jobs for me to look at",
+                                 value=profile.get("hold_check", False))
+        if (skip_risky, hold_check) != (profile.get("skip_risky", True), profile.get("hold_check", False)):
+            profile.update(skip_risky=skip_risky, hold_check=hold_check)
+            save_profile(profile)
         st.caption(
             "For each job it opens the posting, fills everything in, attaches a resume made for that job, "
             "and submits. Jobs it can't finish honestly (CAPTCHA, login needed, a question you haven't "
-            "answered) go to **Needs review** with the reason. It waits 20-45 seconds between jobs. "
+            "answered) go to **Needs review** with the reason. Before each job it runs the scam check, so "
+            "your details aren't sent to companies that look fake. It waits 20-45 seconds between jobs. "
             "Indeed and LinkedIn don't allow automated applying and can suspend accounts, so jobs that "
             "need you signed in to them are best done in review mode.")
         if not_ready:
@@ -312,7 +348,7 @@ with tab_apply:
     st.subheader(f"Needs review ({len(review)})")
     if review:
         st.dataframe([{"title": j["title"], "company": j["company"], "why": j["notes"]} for j in review],
-                     hide_index=True, use_container_width=True)
+                     hide_index=True, width="stretch")
         if st.button("Open these so I can finish them"):
             launch(["--mode", "review", "--status", "needs_review"])
             st.success("Browser opening...")
@@ -329,6 +365,11 @@ with tab_track:
             st.write(f"{r['location']} · {r['job_type'].replace('_', ' ')} · {r['salary']} · posted {r['posted']}")
             if r["notes"]:
                 st.info(r["notes"])
+            risk = tracker.research(r["id"]) or assess(r).to_dict()
+            if risk["level"] != "low":
+                st.warning(f"{risk_label(risk['level'])}: "
+                           + "; ".join(risk["reasons"]))
+            st.markdown("Check this company: " + " · ".join(f"[{n}]({u})" for n, u in risk["links"].items()))
             st.write(r["description"][:1500])
             st.link_button("Open posting", r["url"])
             c1, c2 = st.columns([1, 3])

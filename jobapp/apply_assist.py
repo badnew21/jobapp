@@ -30,6 +30,7 @@ from pathlib import Path
 
 from .profile import DATA_DIR, load_profile
 from .resume import read_resume, resume_filename, tailor_for_job
+from .scamcheck import assess
 from .tracker import Tracker
 
 BROWSER_PROFILE = DATA_DIR / "browser"
@@ -432,6 +433,30 @@ def resume_for(job: dict, profile: dict, base_text: str) -> str:
     return str(path)
 
 
+def safety_check(job: dict, tracker: Tracker) -> dict:
+    """Online scam check, reusing an earlier result when there is one."""
+    saved = tracker.research(job["id"])
+    if saved and saved.get("online_checked"):
+        return saved
+    result = assess(job, online=True).to_dict()
+    tracker.save_research(job["id"], result)
+    return result
+
+
+def safety_gate(job: dict, tracker: Tracker, profile: dict) -> tuple[str, str] | None:
+    """(status, note) if this job should not be applied to automatically."""
+    try:
+        risk = safety_check(job, tracker)
+    except Exception:  # noqa: BLE001 - a failed lookup shouldn't stop the run
+        return None
+    reasons = "; ".join(risk["reasons"][:3])
+    if risk["level"] == "high" and profile.get("skip_risky", True):
+        return "skipped", f"Possible scam, not applied: {reasons}"
+    if risk["level"] == "check" and profile.get("hold_check", False):
+        return "needs_review", f"Check this company first: {reasons}"
+    return None
+
+
 def run(limit: int | None = None, job_ids: list[str] | None = None, mode: str = "auto",
         status: str = "queued", headless: bool = False, dry_run: bool = False,
         daily_cap: int = 40, pause: tuple[int, int] = (20, 45)) -> None:
@@ -481,6 +506,13 @@ def run(limit: int | None = None, job_ids: list[str] | None = None, mode: str = 
             label = f"[{n}/{len(jobs)}] {job['title']} - {job['company']}"
             state.update(decision=None, fill=False, info=label)
             print(label, flush=True)
+            gate = safety_gate(job, tracker, profile)
+            if gate and mode == "auto":
+                tracker.set_status(job["id"], *gate)
+                print(f"  -> {gate[0]}: {gate[1]}", flush=True)
+                continue
+            if gate:  # review mode: just warn her on the bar
+                state["info"] = f"⚠️ {gate[1][:120]}  |  {label}"
             resume_path = resume_for(job, profile, base_text)
 
             if mode == "auto":

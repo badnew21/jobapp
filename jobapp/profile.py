@@ -46,6 +46,7 @@ def load_profile() -> dict:
     base = {k: "" for k in FIELDS} | {
         "resume_path": "", "tailored_resume_path": "", "skill_bank": [], "resume_format": "pdf",
         "answers": dict(ANSWER_DEFAULTS), "eeo_decline": True, "auto_agree_terms": False,
+        "skip_risky": True, "hold_check": False,
     }
     if PROFILE_PATH.exists():
         base.update(json.loads(PROFILE_PATH.read_text()))

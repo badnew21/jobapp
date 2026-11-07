@@ -7,6 +7,17 @@ A small app that runs on your own computer. It does four things:
 3. **Makes a resume for every job.** Before each application, it writes a fresh copy of your resume. The skills that posting asks for go at the top of the Skills section and into the summary, and the summary names that job title. Files are named like `Jane Doe Resume - Walmart.pdf`.
 4. **Applies automatically.** For each queued job it opens the posting, clicks Apply, fills in your details, answers the screening questions you set up, attaches that job's resume, clicks through Next / Submit, and checks for a "thank you for applying" page.
 
+## Scam check
+
+Every job gets a safety rating in the search results: 🟢 Looks OK, 🟡 Check first, or 🔴 Possible scam.
+
+- **The posting is checked for the usual warning signs:** fees for training or equipment, depositing a check and sending money back, buying gift cards, reshipping packages, interviews over Telegram or WhatsApp, asking for your SSN or bank details before an interview, pay far too high for the work, a Gmail/Yahoo contact address, no company name.
+- **Press "Research these companies"** to also check each company's website: whether it loads, and how long ago the domain was registered. A careers site registered a few weeks ago is a classic scam setup.
+- **"Why N jobs are flagged"** under the results lists the reasons, with links to look the company up on the Better Business Bureau, BBB Scam Tracker, Indeed and Glassdoor reviews, and a "scam" search.
+- **The auto-submitter runs the check before every job.** It skips 🔴 jobs so her details don't get sent to them. You can also have it hold 🟡 jobs for you to look at. "Select all new jobs" leaves 🔴 jobs out too.
+
+A green rating isn't a guarantee. A real employer never asks you to pay to get the job, and never needs your SSN or bank details before an interview.
+
 ## What happens when it can't finish a job
 
 It never guesses. If an application has a CAPTCHA, wants you to log in or create an account, asks a question you haven't answered (felony history, a custom essay question and so on), or shows an error after Submit, the job goes to **Needs review** with the reason. Press **Open these so I can finish them** on the Apply tab and it opens each one, filled in as far as it got.
